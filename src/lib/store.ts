@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 import { SAMPLE_BRANDS, defaultConfig } from "@/lib/defaults";
 import { DEFAULT_COLORS, normalizePalette } from "@/lib/palette";
@@ -15,13 +15,19 @@ import type {
   VideoProject,
 } from "@/lib/types";
 
+/** Block persist writes until rehydrate finishes so SSR defaults can't overwrite saved brands. */
+let canPersist = false;
+
 interface EditorStore {
   brands: Brand[];
   videos: VideoProject[];
+  /** Once true, sample brands are never auto-restored (even if the list is empty). */
+  brandsSeeded: boolean;
   hydrated: boolean;
   driveConnected: boolean;
   setHydrated: (v: boolean) => void;
   setDriveConnected: (v: boolean) => void;
+  seedBrandsIfNeeded: () => void;
   addBrand: (input: {
     name: string;
     driveUrl?: string;
@@ -85,12 +91,24 @@ function migrateConfig(raw: Partial<VideoConfig> & Record<string, unknown>, bran
 export const useEditorStore = create<EditorStore>()(
   persist(
     (set, get) => ({
-      brands: SAMPLE_BRANDS,
+      brands: [],
       videos: [],
+      brandsSeeded: false,
       hydrated: false,
       driveConnected: false,
       setHydrated: (v) => set({ hydrated: v }),
       setDriveConnected: (v) => set({ driveConnected: v }),
+      seedBrandsIfNeeded: () => {
+        const state = get();
+        if (state.brandsSeeded) return;
+        set({
+          brands: SAMPLE_BRANDS.map((b) => ({
+            ...b,
+            palette: b.palette.map((c) => ({ ...c })),
+          })),
+          brandsSeeded: true,
+        });
+      },
 
       addBrand: (input) => {
         const now = new Date().toISOString();
@@ -108,7 +126,7 @@ export const useEditorStore = create<EditorStore>()(
           createdAt: now,
           updatedAt: now,
         };
-        set((s) => ({ brands: [brand, ...s.brands] }));
+        set((s) => ({ brands: [brand, ...s.brands], brandsSeeded: true }));
         return brand;
       },
 
@@ -124,12 +142,14 @@ export const useEditorStore = create<EditorStore>()(
                 }
               : b,
           ),
+          brandsSeeded: true,
         })),
 
       deleteBrand: (id) =>
         set((s) => ({
           brands: s.brands.filter((b) => b.id !== id),
           videos: s.videos.filter((v) => v.brandId !== id),
+          brandsSeeded: true,
         })),
 
       createVideo: ({ title, brandId, config, motionIds }) => {
@@ -312,17 +332,47 @@ export const useEditorStore = create<EditorStore>()(
     {
       name: "digitalist-video-editor",
       skipHydration: true,
-      version: 2,
+      version: 3,
+      storage: createJSONStorage(() => {
+        if (typeof window === "undefined") {
+          return {
+            getItem: () => null,
+            setItem: () => undefined,
+            removeItem: () => undefined,
+          };
+        }
+        return {
+          getItem: (name) => localStorage.getItem(name),
+          setItem: (name, value) => {
+            // Avoid writing default empty/sample state over real data before rehydrate.
+            if (!canPersist) return;
+            localStorage.setItem(name, value);
+          },
+          removeItem: (name) => localStorage.removeItem(name),
+        };
+      }),
+      partialize: (s) => ({
+        brands: s.brands,
+        videos: s.videos,
+        brandsSeeded: s.brandsSeeded,
+        driveConnected: s.driveConnected,
+      }),
       migrate: (persisted) => {
         const state = (persisted ?? {}) as {
           brands?: Brand[];
           videos?: VideoProject[];
           driveConnected?: boolean;
+          brandsSeeded?: boolean;
         };
+        const brands = Array.isArray(state.brands)
+          ? state.brands.map(migrateBrand)
+          : SAMPLE_BRANDS.map((b) => ({ ...b, palette: b.palette.map((c) => ({ ...c })) }));
         return {
-          brands: (state.brands ?? SAMPLE_BRANDS).map(migrateBrand),
+          brands,
+          // Any prior persisted brands list (including empty after deletes) means we already seeded.
+          brandsSeeded: state.brandsSeeded ?? Array.isArray(state.brands),
           videos: (state.videos ?? []).map((v) => {
-            const brand = (state.brands ?? SAMPLE_BRANDS).find((b) => b.id === v.brandId);
+            const brand = brands.find((b) => b.id === v.brandId);
             return {
               ...v,
               config: migrateConfig(v.config as VideoConfig & Record<string, unknown>, brand),
@@ -332,6 +382,8 @@ export const useEditorStore = create<EditorStore>()(
         };
       },
       onRehydrateStorage: () => (state) => {
+        canPersist = true;
+        state?.seedBrandsIfNeeded();
         state?.setHydrated(true);
       },
     },
