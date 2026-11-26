@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { extractDriveFolderId, driveConfigured } from "@/lib/drive";
-import { paletteFromTokensJson } from "@/lib/palette";
+import {
+  isDefaultPalette,
+  paletteFromTokensCss,
+  paletteFromTokensJson,
+} from "@/lib/palette";
 import { requireCaller } from "@/lib/require-caller";
 
 export const runtime = "nodejs";
@@ -33,25 +37,16 @@ async function loadLocalTokens(hint: string) {
   if (!key) return null;
   const file = path.resolve(/*turbopackIgnore: true*/ process.cwd(), LOCAL_SAMPLES[key]);
   const raw = await readFile(file, "utf8");
-  return JSON.parse(raw) as {
-    name?: string;
-    palette?: Record<string, string>;
-    typography?: {
-      display?: { family?: string; weight?: number };
-      body?: { family?: string; weight?: number };
-    };
-    motion?: { style?: string };
-  };
+  return JSON.parse(raw) as Record<string, unknown> & { name?: string };
 }
 
 type DriveList = {
-  files?: { id: string; name: string }[];
+  files?: { id: string; name: string; mimeType?: string }[];
   error?: { message?: string; status?: string };
 };
 
 function driveErrorMessage(status: number, message?: string) {
   const raw = (message || "").trim();
-  // API keys + corpora=allDrives (and similar) often return a bare "Bad Request".
   if (status === 400 || /bad request/i.test(raw)) {
     return (
       "Google Drive rejected the lookup (Bad Request). Checklist: (1) API key Application restriction = None " +
@@ -70,12 +65,10 @@ function driveErrorMessage(status: number, message?: string) {
 }
 
 async function driveList(apiKey: string, query: string) {
-  // API keys only work for publicly / link-shared files. Do not send corpora=allDrives —
-  // Google returns HTTP 400 "Bad Request" for that combo.
   const listUrl = new URL("https://www.googleapis.com/drive/v3/files");
   listUrl.searchParams.set("q", query);
   listUrl.searchParams.set("fields", "files(id,name,mimeType)");
-  listUrl.searchParams.set("pageSize", "25");
+  listUrl.searchParams.set("pageSize", "50");
   listUrl.searchParams.set("spaces", "drive");
   listUrl.searchParams.set("key", apiKey);
 
@@ -87,8 +80,34 @@ async function driveList(apiKey: string, query: string) {
   return listJson.files ?? [];
 }
 
-async function loadDriveTokens(folderId: string): Promise<
-  | { ok: true; tokens: Parameters<typeof paletteFromTokensJson>[0] & { name?: string } }
+async function driveDownloadText(apiKey: string, fileId: string) {
+  const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}`);
+  fileUrl.searchParams.set("alt", "media");
+  fileUrl.searchParams.set("key", apiKey);
+  const fileRes = await fetch(fileUrl);
+  if (!fileRes.ok) {
+    let detail = "";
+    try {
+      const errJson = (await fileRes.json()) as DriveList;
+      detail = errJson.error?.message || "";
+    } catch {
+      /* ignore */
+    }
+    throw new Error(driveErrorMessage(fileRes.status, detail || `Download failed (${fileRes.status})`));
+  }
+  return fileRes.text();
+}
+
+type DriveBundle = {
+  tokens?: Record<string, unknown> & { name?: string };
+  cssText?: string;
+  fileNames: string[];
+  tokenFileName?: string;
+  cssFileName?: string;
+};
+
+async function loadDriveBundle(folderId: string): Promise<
+  | { ok: true; bundle: DriveBundle }
   | { ok: false; error: string }
 > {
   const key = process.env.GOOGLE_DRIVE_API_KEY?.trim();
@@ -100,11 +119,7 @@ async function loadDriveTokens(folderId: string): Promise<
   }
 
   try {
-    // Probe folder access first — API keys only see public / link-shared files.
-    const children = await driveList(
-      key,
-      `'${folderId}' in parents and trashed=false`,
-    );
+    const children = await driveList(key, `'${folderId}' in parents and trashed=false`);
 
     if (!children.length) {
       return {
@@ -114,55 +129,41 @@ async function loadDriveTokens(folderId: string): Promise<
       };
     }
 
+    const fileNames = children.map((f) => f.name);
     const tokensFile =
       children.find((f) => f.name.toLowerCase() === "tokens.json") ??
-      (
-        await driveList(
-          key,
-          `'${folderId}' in parents and name contains 'tokens' and trashed=false`,
-        )
-      ).find((f) => f.name.toLowerCase().endsWith(".json"));
+      children.find((f) => /tokens?\.json$/i.test(f.name)) ??
+      children.find((f) => f.name.toLowerCase().endsWith(".json") && /token|design|brand|theme/i.test(f.name));
 
-    if (!tokensFile) {
-      const names = children.map((f) => f.name).slice(0, 8).join(", ");
+    const cssFile =
+      children.find((f) => f.name.toLowerCase() === "tokens.css") ??
+      children.find((f) => f.name.toLowerCase().endsWith(".css") && /token|theme|brand|variables/i.test(f.name));
+
+    if (!tokensFile && !cssFile) {
       return {
         ok: false,
-        error: `No tokens.json in that folder. Files seen: ${names || "(none)"}. Add a tokens.json with palette + typography.`,
+        error: `No tokens.json (or tokens.css) in that folder. Files seen: ${fileNames.slice(0, 10).join(", ") || "(none)"}.`,
       };
     }
 
-    const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${tokensFile.id}`);
-    fileUrl.searchParams.set("alt", "media");
-    fileUrl.searchParams.set("key", key);
-    const fileRes = await fetch(fileUrl);
-    if (!fileRes.ok) {
-      let detail = "";
+    const bundle: DriveBundle = { fileNames };
+
+    if (tokensFile) {
+      const raw = await driveDownloadText(key, tokensFile.id);
       try {
-        const errJson = (await fileRes.json()) as DriveList;
-        detail = errJson.error?.message || "";
+        bundle.tokens = JSON.parse(raw) as Record<string, unknown> & { name?: string };
+        bundle.tokenFileName = tokensFile.name;
       } catch {
-        /* ignore */
+        return { ok: false, error: `${tokensFile.name} is not valid JSON.` };
       }
-      return {
-        ok: false,
-        error: driveErrorMessage(
-          fileRes.status,
-          detail || `Found ${tokensFile.name} but could not download it (${fileRes.status}).`,
-        ),
-      };
     }
 
-    try {
-      const tokens = (await fileRes.json()) as Parameters<typeof paletteFromTokensJson>[0] & {
-        name?: string;
-      };
-      return { ok: true, tokens };
-    } catch {
-      return {
-        ok: false,
-        error: `${tokensFile.name} is not valid JSON.`,
-      };
+    if (cssFile) {
+      bundle.cssText = await driveDownloadText(key, cssFile.id);
+      bundle.cssFileName = cssFile.name;
     }
+
+    return { ok: true, bundle };
   } catch (error) {
     return {
       ok: false,
@@ -199,14 +200,22 @@ export async function POST(request: Request) {
       );
     }
 
-    let tokens: Awaited<ReturnType<typeof loadLocalTokens>> = null;
+    let tokens: (Record<string, unknown> & { name?: string }) | null = null;
+    let cssText: string | null = null;
     let source: "google-drive" | "local-sample" | "none" = "none";
     let driveError: string | null = null;
+    let fileNames: string[] = [];
+    let tokenFileName: string | undefined;
+    let cssFileName: string | undefined;
 
     if (folderId && driveConfigured()) {
-      const driveResult = await loadDriveTokens(folderId);
+      const driveResult = await loadDriveBundle(folderId);
       if (driveResult.ok) {
-        tokens = driveResult.tokens;
+        tokens = driveResult.bundle.tokens ?? null;
+        cssText = driveResult.bundle.cssText ?? null;
+        fileNames = driveResult.bundle.fileNames;
+        tokenFileName = driveResult.bundle.tokenFileName;
+        cssFileName = driveResult.bundle.cssFileName;
         source = "google-drive";
       } else {
         driveError = driveResult.error;
@@ -215,12 +224,12 @@ export async function POST(request: Request) {
       driveError = "Drive API key is not configured on the server.";
     }
 
-    if (!tokens) {
+    if (!tokens && !cssText) {
       tokens = await loadLocalTokens(pathHint || driveUrl);
       if (tokens) source = "local-sample";
     }
 
-    if (!tokens) {
+    if (!tokens && !cssText) {
       return NextResponse.json(
         {
           ok: false,
@@ -234,15 +243,65 @@ export async function POST(request: Request) {
       );
     }
 
-    const parsed = paletteFromTokensJson(tokens);
+    const parsed = tokens
+      ? paletteFromTokensJson(tokens)
+      : { palette: [], typography: "", visualStyle: undefined, usedFallback: true };
+
+    let palette = parsed.palette;
+    let usedFallback = parsed.usedFallback;
+    let typography = parsed.typography;
+    let fromCss = false;
+
+    if ((usedFallback || !palette.length) && cssText) {
+      const cssPalette = paletteFromTokensCss(cssText);
+      if (cssPalette.length) {
+        palette = cssPalette;
+        usedFallback = false;
+        fromCss = true;
+      }
+    }
+
+    // Drive file downloaded, but no parseable colors → do not pretend we updated the brand.
+    if (source === "google-drive" && usedFallback) {
+      const topKeys = tokens ? Object.keys(tokens).slice(0, 12).join(", ") : "(no json)";
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            `Found ${tokenFileName || cssFileName || "token file"} but could not read brand colors from it. ` +
+            `Top-level JSON keys: ${topKeys || "(none)"}. ` +
+            `Use a flat palette map like {"palette":{"background":"#111","text":"#fff","accent":"#f60"}} ` +
+            `or CSS variables in tokens.css (--background: #111). Files in folder: ${fileNames.slice(0, 10).join(", ")}.`,
+          configured: true,
+          folderId,
+          tokenFileName,
+          cssFileName,
+          fileNames,
+          topKeys: tokens ? Object.keys(tokens) : [],
+        },
+        { status: 422 },
+      );
+    }
+
+    const warning =
+      source === "google-drive" && isDefaultPalette(palette)
+        ? "These colors match the app sample palette (navy / coral / violet). If Rootlab should look different, update tokens.json in Drive and pull again."
+        : undefined;
+
     return NextResponse.json({
       ok: true,
       source,
-      name: tokens.name,
-      palette: parsed.palette,
-      typography: parsed.typography,
+      warning,
+      name: typeof tokens?.name === "string" ? tokens.name : undefined,
+      palette,
+      typography,
       visualStyle: parsed.visualStyle,
       folderId,
+      tokenFileName,
+      cssFileName,
+      fromCss,
+      colorCount: palette.length,
+      fileNames: source === "google-drive" ? fileNames : undefined,
     });
   } catch (error) {
     return NextResponse.json(

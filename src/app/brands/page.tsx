@@ -39,27 +39,32 @@ export default function BrandsPage() {
       const data = (await res.json().catch(() => null)) as {
         ok: boolean;
         error?: string;
+        warning?: string;
         palette?: BrandColor[];
         typography?: string;
         source?: string;
+        colorCount?: number;
+        tokenFileName?: string;
       } | null;
-      if (!data?.ok || !data.palette) {
+      if (!data?.ok || !data.palette?.length) {
         setImportMessage(
           data?.error ||
             (res.ok ? "Could not import design system" : `Import failed (${res.status} ${res.statusText})`),
         );
         return;
       }
+      const nextPalette = normalizePalette(data.palette).slice(0, MAX_BRAND_COLORS);
       updateBrand(brandId, {
-        palette: normalizePalette(data.palette).slice(0, MAX_BRAND_COLORS),
-        typography: data.typography,
+        palette: nextPalette,
+        typography: data.typography || undefined,
         notes: notesFromImport(brandId, data.source),
       });
-      setImportMessage(
+      const hexPreview = nextPalette.map((c) => c.hex).join(", ");
+      const base =
         data.source === "google-drive"
-          ? "Pulled colors & typography from Drive tokens.json"
-          : "Loaded sample design-system tokens (bind GOOGLE_DRIVE_API_KEY for live Drive reads)",
-      );
+          ? `Pulled ${nextPalette.length} colors from ${data.tokenFileName || "Drive"}: ${hexPreview}`
+          : `Loaded sample design-system tokens: ${hexPreview}`;
+      setImportMessage(data.warning ? `${base} — ${data.warning}` : base);
     } catch {
       setImportMessage("Import failed");
     } finally {
@@ -70,9 +75,13 @@ export default function BrandsPage() {
   function notesFromImport(brandId: string, source?: string) {
     const brand = brands.find((b) => b.id === brandId);
     const stamp = `Design system imported (${source ?? "unknown"}) at ${new Date().toLocaleString()}`;
-    if (!brand?.notes) return stamp;
-    if (brand.notes.includes("Design system imported")) return brand.notes;
-    return `${brand.notes}\n${stamp}`;
+    if (!brand?.notes?.trim()) return stamp;
+    const withoutOld = brand.notes
+      .split("\n")
+      .filter((line) => !line.startsWith("Design system imported"))
+      .join("\n")
+      .trim();
+    return withoutOld ? `${withoutOld}\n${stamp}` : stamp;
   }
 
   function onCreate(e: React.FormEvent) {
@@ -179,14 +188,32 @@ export default function BrandsPage() {
               </Button>
             </div>
 
-            <div className="swatch-row">
-              {brand.palette.slice(0, MAX_BRAND_COLORS).map((color) => (
-                <div key={color.id} className="swatch-chip">
-                  <span className="swatch shrink-0" style={{ background: color.hex }} />
-                  <span className="truncate text-[var(--muted)]">{color.role}</span>
-                  <span className="mono truncate">{color.hex}</span>
-                </div>
-              ))}
+            <div className="space-y-2">
+              <div className="swatch-row">
+                {brand.palette.slice(0, MAX_BRAND_COLORS).map((color) => (
+                  <label key={color.id} className="swatch-chip cursor-pointer">
+                    <span className="swatch shrink-0" style={{ background: color.hex }} />
+                    <span className="truncate text-[var(--muted)]">{color.role}</span>
+                    <input
+                      className="mono w-[6.5rem] bg-transparent outline-none"
+                      value={color.hex}
+                      onChange={(e) => {
+                        const hex = e.target.value;
+                        updateBrand(brand.id, {
+                          palette: brand.palette.map((c) =>
+                            c.id === color.id ? { ...c, hex } : c,
+                          ),
+                        });
+                      }}
+                      aria-label={`${color.role} hex`}
+                    />
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-[var(--muted)]">
+                {brand.palette.length} color{brand.palette.length === 1 ? "" : "s"} — edit hex values
+                here, or pull again after fixing tokens.json / tokens.css in Drive.
+              </p>
             </div>
 
             <label className="block space-y-2 text-sm">
