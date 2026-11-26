@@ -36,15 +36,18 @@ export default function BrandsPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ driveUrl: url, brandName }),
       });
-      const data = (await res.json()) as {
+      const data = (await res.json().catch(() => null)) as {
         ok: boolean;
         error?: string;
         palette?: BrandColor[];
         typography?: string;
         source?: string;
-      };
-      if (!data.ok || !data.palette) {
-        setImportMessage(data.error || "Could not import design system");
+      } | null;
+      if (!data?.ok || !data.palette) {
+        setImportMessage(
+          data?.error ||
+            (res.ok ? "Could not import design system" : `Import failed (${res.status} ${res.statusText})`),
+        );
         return;
       }
       updateBrand(brandId, {

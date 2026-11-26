@@ -49,21 +49,40 @@ type DriveList = {
   error?: { message?: string; status?: string };
 };
 
-async function driveList(folderId: string, apiKey: string, query: string) {
+function driveErrorMessage(status: number, message?: string) {
+  const raw = (message || "").trim();
+  // API keys + corpora=allDrives (and similar) often return a bare "Bad Request".
+  if (status === 400 || /bad request/i.test(raw)) {
+    return (
+      "Google Drive rejected the lookup (Bad Request). Checklist: (1) API key Application restriction = None " +
+      "(not HTTP referrers — this app calls Drive from the server), (2) Drive API enabled on that Cloud project, " +
+      "(3) folder URL is drive.google.com/drive/folders/… in My Drive, (4) folder + tokens.json shared as " +
+      "Anyone with the link → Viewer. Shared drives need a service account, not an API key."
+    );
+  }
+  if (status === 403 || /forbidden|permission|access not configured/i.test(raw)) {
+    return (
+      "Drive API key cannot see that folder. Share the folder (and tokens.json) as Anyone with the link → Viewer, " +
+      "and enable the Google Drive API on the same Google Cloud project as the key."
+    );
+  }
+  return raw || `Drive list failed (${status})`;
+}
+
+async function driveList(apiKey: string, query: string) {
+  // API keys only work for publicly / link-shared files. Do not send corpora=allDrives —
+  // Google returns HTTP 400 "Bad Request" for that combo.
   const listUrl = new URL("https://www.googleapis.com/drive/v3/files");
   listUrl.searchParams.set("q", query);
   listUrl.searchParams.set("fields", "files(id,name,mimeType)");
   listUrl.searchParams.set("pageSize", "25");
-  listUrl.searchParams.set("supportsAllDrives", "true");
-  listUrl.searchParams.set("includeItemsFromAllDrives", "true");
-  listUrl.searchParams.set("corpora", "allDrives");
+  listUrl.searchParams.set("spaces", "drive");
   listUrl.searchParams.set("key", apiKey);
 
   const listRes = await fetch(listUrl);
   const listJson = (await listRes.json()) as DriveList;
   if (!listRes.ok) {
-    const message = listJson.error?.message || `Drive list failed (${listRes.status})`;
-    throw new Error(message);
+    throw new Error(driveErrorMessage(listRes.status, listJson.error?.message));
   }
   return listJson.files ?? [];
 }
@@ -80,60 +99,74 @@ async function loadDriveTokens(folderId: string): Promise<
     };
   }
 
-  // Probe folder access first — API keys only see public / link-shared files.
-  const children = await driveList(
-    folderId,
-    key,
-    `'${folderId}' in parents and trashed=false`,
-  );
-
-  if (!children.length) {
-    return {
-      ok: false,
-      error:
-        "Drive folder looks empty or inaccessible with an API key. Share the folder as “Anyone with the link → Viewer” (or use a service account), confirm the full folder URL, and put tokens.json inside it.",
-    };
-  }
-
-  const tokensFile =
-    children.find((f) => f.name.toLowerCase() === "tokens.json") ??
-    (
-      await driveList(
-        folderId,
-        key,
-        `'${folderId}' in parents and name contains 'tokens' and trashed=false`,
-      )
-    ).find((f) => f.name.toLowerCase().endsWith(".json"));
-
-  if (!tokensFile) {
-    const names = children.map((f) => f.name).slice(0, 8).join(", ");
-    return {
-      ok: false,
-      error: `No tokens.json in that folder. Files seen: ${names || "(none)"}. Add a tokens.json with palette + typography.`,
-    };
-  }
-
-  const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${tokensFile.id}`);
-  fileUrl.searchParams.set("alt", "media");
-  fileUrl.searchParams.set("supportsAllDrives", "true");
-  fileUrl.searchParams.set("key", key);
-  const fileRes = await fetch(fileUrl);
-  if (!fileRes.ok) {
-    return {
-      ok: false,
-      error: `Found ${tokensFile.name} but could not download it (${fileRes.status}). Make that file link-shared as Viewer.`,
-    };
-  }
-
   try {
-    const tokens = (await fileRes.json()) as Parameters<typeof paletteFromTokensJson>[0] & {
-      name?: string;
-    };
-    return { ok: true, tokens };
-  } catch {
+    // Probe folder access first — API keys only see public / link-shared files.
+    const children = await driveList(
+      key,
+      `'${folderId}' in parents and trashed=false`,
+    );
+
+    if (!children.length) {
+      return {
+        ok: false,
+        error:
+          "Drive folder looks empty or inaccessible with an API key. Share the folder as “Anyone with the link → Viewer” (or use a service account), confirm the full folder URL, and put tokens.json inside it.",
+      };
+    }
+
+    const tokensFile =
+      children.find((f) => f.name.toLowerCase() === "tokens.json") ??
+      (
+        await driveList(
+          key,
+          `'${folderId}' in parents and name contains 'tokens' and trashed=false`,
+        )
+      ).find((f) => f.name.toLowerCase().endsWith(".json"));
+
+    if (!tokensFile) {
+      const names = children.map((f) => f.name).slice(0, 8).join(", ");
+      return {
+        ok: false,
+        error: `No tokens.json in that folder. Files seen: ${names || "(none)"}. Add a tokens.json with palette + typography.`,
+      };
+    }
+
+    const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${tokensFile.id}`);
+    fileUrl.searchParams.set("alt", "media");
+    fileUrl.searchParams.set("key", key);
+    const fileRes = await fetch(fileUrl);
+    if (!fileRes.ok) {
+      let detail = "";
+      try {
+        const errJson = (await fileRes.json()) as DriveList;
+        detail = errJson.error?.message || "";
+      } catch {
+        /* ignore */
+      }
+      return {
+        ok: false,
+        error: driveErrorMessage(
+          fileRes.status,
+          detail || `Found ${tokensFile.name} but could not download it (${fileRes.status}).`,
+        ),
+      };
+    }
+
+    try {
+      const tokens = (await fileRes.json()) as Parameters<typeof paletteFromTokensJson>[0] & {
+        name?: string;
+      };
+      return { ok: true, tokens };
+    } catch {
+      return {
+        ok: false,
+        error: `${tokensFile.name} is not valid JSON.`,
+      };
+    }
+  } catch (error) {
     return {
       ok: false,
-      error: `${tokensFile.name} is not valid JSON.`,
+      error: error instanceof Error ? error.message : "Drive import failed",
     };
   }
 }
