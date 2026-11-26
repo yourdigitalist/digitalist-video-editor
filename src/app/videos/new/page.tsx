@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Plus, Search, Sparkles, X } from "lucide-react";
@@ -34,9 +34,16 @@ export default function NewVideoPage() {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const seededFromHydration = useRef(false);
   useEffect(() => {
-    if (!brandId && availableBrands[0]) setBrandId(availableBrands[0].id);
-  }, [availableBrands, brandId]);
+    if (!hydrated || seededFromHydration.current) return;
+    seededFromHydration.current = true;
+    const nextBrands = brands.length ? brands : SAMPLE_BRANDS;
+    const next = nextBrands.find((b) => b.id === brandId) ?? nextBrands[0];
+    if (!next) return;
+    setBrandId(next.id);
+    setConfig(defaultConfig(next));
+  }, [hydrated, brands, brandId]);
 
   const prompt = useMemo(() => {
     if (!brand) return "";

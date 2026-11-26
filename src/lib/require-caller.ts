@@ -1,33 +1,23 @@
 import { NextResponse } from "next/server";
+import { getIdentity } from "../../cursor/identity";
 
 /**
  * Auth gate for published private/team apps.
- * Avoids importing cursor/identity.ts (Turbopack fails on its .js extension alias locally).
- * On the published host the Cursor gate already requires sign-in; we still require the
- * identity header so anonymous/cross-site callers without it are rejected.
+ * Verifies the Cursor identity JWT (or the local simulated viewer in development).
  */
-export function requireCaller(request: Request):
-  | { ok: true; sub: string }
-  | { ok: false; response: NextResponse } {
-  const isPublished = Boolean(process.env.CURSOR_APP_ID || process.env.VERCEL);
-  const header =
-    request.headers.get("x-cursor-identity-v2") ||
-    request.headers.get("x-cursor-identity");
-
-  if (!isPublished) {
-    return { ok: true, sub: "local-dev" };
-  }
-
-  if (!header) {
+export async function requireCaller(
+  request: Request,
+): Promise<{ ok: true; sub: string } | { ok: false; response: NextResponse }> {
+  const identity = await getIdentity(request);
+  if (!identity.verified) {
     return {
       ok: false,
       response: NextResponse.json(
-        { ok: false, error: "unauthorized", reason: "missing_header" },
-        { status: 401 },
+        { ok: false, error: "unauthorized", reason: identity.reason },
+        { status: 401, headers: { "cache-control": "private, no-store" } },
       ),
     };
   }
 
-  // Opaque subject for rate limiting — do not parse/verify claims here.
-  return { ok: true, sub: `session:${header.slice(0, 24)}` };
+  return { ok: true, sub: identity.sub };
 }

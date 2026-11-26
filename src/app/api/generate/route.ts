@@ -47,7 +47,7 @@ function projectsDirFor(id: string): string | null {
 
 export async function POST(request: Request) {
   try {
-    const caller = requireCaller(request);
+    const caller = await requireCaller(request);
     if (!caller.ok) return caller.response;
 
     if (!allowRequest(`id:${caller.sub}`)) {
