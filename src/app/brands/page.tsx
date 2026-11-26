@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, Plus, Trash2, Upload } from "lucide-react";
+import { ExternalLink, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { useEditorStore } from "@/lib/store";
@@ -47,8 +47,8 @@ export default function BrandsPage() {
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-bold">Brands</h1>
           <p className="mt-2 max-w-2xl text-[var(--muted)]">
-            Each brand keeps its design system path, Google Drive assets, palette and typography.
-            Videos inherit these tokens when you generate.
+            Keep logos, photos and design-system files in a Google Drive folder and paste the link
+            here. No database needed for brand assets — Cursor reads the Drive folder when generating.
           </p>
         </div>
         <Button onClick={() => setOpen((v) => !v)}>
@@ -77,20 +77,15 @@ export default function BrandsPage() {
             </label>
           </div>
           <label className="block space-y-2 text-sm">
-            <span className="text-[var(--muted)]">Design system upload / path</span>
-            <div className="flex gap-2">
-              <Input
-                value={designSystemNote}
-                onChange={(e) => setDesignSystemNote(e.target.value)}
-                placeholder="examples/brands/fungal-dreams or pasted folder name"
-              />
-              <Button type="button" variant="secondary" className="shrink-0">
-                <Upload className="h-4 w-4" />
-                Attach
-              </Button>
-            </div>
+            <span className="text-[var(--muted)]">Design system folder (Drive or local note)</span>
+            <Input
+              value={designSystemNote}
+              onChange={(e) => setDesignSystemNote(e.target.value)}
+              placeholder="Put tokens.json, Guidelines.md, Logos.md… in the Drive folder above"
+            />
             <p className="text-xs text-[var(--muted)]">
-              Expect packs like tokens.json, Guidelines.md, Logos.md, Photography.md, Product-Cutouts.md.
+              Recommended: one Drive folder per brand with tokens, guidelines, logos and product cutouts.
+              Paste that folder URL in Google Drive — no Supabase/upload required for v1.
             </p>
           </label>
           <label className="block space-y-2 text-sm">
