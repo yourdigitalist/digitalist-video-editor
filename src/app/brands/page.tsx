@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { extractDriveFolderId } from "@/lib/drive";
 import { MAX_BRAND_COLORS, normalizePalette } from "@/lib/palette";
 import { useEditorStore } from "@/lib/store";
 import { formatRelative } from "@/lib/utils";
@@ -220,9 +221,11 @@ export default function BrandsPage() {
               <span className="text-[var(--muted)]">Google Drive link</span>
               <div className="flex gap-2">
                 <Input
+                  className="font-mono text-xs"
                   value={brand.driveUrl ?? ""}
                   onChange={(e) => updateBrand(brand.id, { driveUrl: e.target.value })}
-                  placeholder="https://drive.google.com/…"
+                  placeholder="https://drive.google.com/drive/folders/…"
+                  title={brand.driveUrl || undefined}
                 />
                 {brand.driveUrl ? (
                   <Button asChild variant="secondary" className="shrink-0">
@@ -232,6 +235,11 @@ export default function BrandsPage() {
                   </Button>
                 ) : null}
               </div>
+              {extractDriveFolderId(brand.driveUrl ?? "") ? (
+                <p className="break-all font-mono text-[11px] text-[var(--muted)]">
+                  folder {extractDriveFolderId(brand.driveUrl ?? "")}
+                </p>
+              ) : null}
             </label>
 
             <div className="flex flex-wrap gap-2">
