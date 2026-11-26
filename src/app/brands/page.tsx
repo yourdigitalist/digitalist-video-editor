@@ -43,6 +43,7 @@ export default function BrandsPage() {
         warning?: string;
         palette?: BrandColor[];
         typography?: string;
+        typographyFallback?: boolean;
         source?: string;
         colorCount?: number;
         tokenFileName?: string;
@@ -55,16 +56,19 @@ export default function BrandsPage() {
         return;
       }
       const nextPalette = normalizePalette(data.palette).slice(0, MAX_BRAND_COLORS);
+      const nextTypography =
+        data.typography && !data.typographyFallback ? data.typography : undefined;
       updateBrand(brandId, {
         palette: nextPalette,
-        typography: data.typography || undefined,
+        ...(nextTypography ? { typography: nextTypography } : {}),
         notes: notesFromImport(brandId, data.source),
       });
       const hexPreview = nextPalette.map((c) => c.hex).join(", ");
+      const typePart = nextTypography ? ` · Typography: ${nextTypography}` : "";
       const base =
         data.source === "google-drive"
-          ? `Pulled ${nextPalette.length} colors from ${data.tokenFileName || "Drive"}: ${hexPreview}`
-          : `Loaded sample design-system tokens: ${hexPreview}`;
+          ? `Pulled ${nextPalette.length} colors from ${data.tokenFileName || "Drive"}: ${hexPreview}${typePart}`
+          : `Loaded sample design-system tokens: ${hexPreview}${typePart}`;
       setImportMessage(data.warning ? `${base} — ${data.warning}` : base);
     } catch {
       setImportMessage("Import failed");

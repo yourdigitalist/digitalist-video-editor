@@ -6,6 +6,8 @@ import {
   isDefaultPalette,
   paletteFromTokensCss,
   paletteFromTokensJson,
+  typographyFromCss,
+  typographyFromTokens,
 } from "@/lib/palette";
 import { requireCaller } from "@/lib/require-caller";
 
@@ -245,11 +247,18 @@ export async function POST(request: Request) {
 
     const parsed = tokens
       ? paletteFromTokensJson(tokens)
-      : { palette: [], typography: "", visualStyle: undefined, usedFallback: true };
+      : {
+          palette: [],
+          typography: "",
+          visualStyle: undefined,
+          usedFallback: true,
+          typographyFallback: true,
+        };
 
     let palette = parsed.palette;
     let usedFallback = parsed.usedFallback;
     let typography = parsed.typography;
+    let typographyFallback = parsed.typographyFallback;
     let fromCss = false;
 
     if ((usedFallback || !palette.length) && cssText) {
@@ -259,6 +268,20 @@ export async function POST(request: Request) {
         usedFallback = false;
         fromCss = true;
       }
+    }
+
+    if (typographyFallback && cssText) {
+      const cssType = typographyFromCss(cssText);
+      if (cssType) {
+        typography = cssType;
+        typographyFallback = false;
+      }
+    }
+
+    if (typographyFallback && tokens) {
+      const retry = typographyFromTokens(tokens, cssText ?? undefined);
+      typography = retry.typography;
+      typographyFallback = retry.usedFallback;
     }
 
     // Drive file downloaded, but no parseable colors → do not pretend we updated the brand.
@@ -283,18 +306,26 @@ export async function POST(request: Request) {
       );
     }
 
-    const warning =
-      source === "google-drive" && isDefaultPalette(palette)
-        ? "These colors match the app sample palette (navy / coral / violet). If Rootlab should look different, update tokens.json in Drive and pull again."
-        : undefined;
+    const warnings: string[] = [];
+    if (source === "google-drive" && isDefaultPalette(palette)) {
+      warnings.push(
+        "These colors match the app sample palette (navy / coral / violet). If Rootlab should look different, update tokens.json in Drive and pull again.",
+      );
+    }
+    if (source === "google-drive" && typographyFallback) {
+      warnings.push(
+        "No typography found in tokens.json / tokens.css — left the previous fonts alone. Add typography.display/body (family + weight) or --font-display / --font-body in CSS.",
+      );
+    }
 
     return NextResponse.json({
       ok: true,
       source,
-      warning,
+      warning: warnings.length ? warnings.join(" ") : undefined,
       name: typeof tokens?.name === "string" ? tokens.name : undefined,
       palette,
       typography,
+      typographyFallback,
       visualStyle: parsed.visualStyle,
       folderId,
       tokenFileName,

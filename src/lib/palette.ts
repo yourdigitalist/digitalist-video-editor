@@ -215,56 +215,233 @@ export function isDefaultPalette(palette: BrandColor[]): boolean {
   });
 }
 
+const DEFAULT_TYPOGRAPHY = "Inter 800 for titles, Inter 500 for support";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function unwrapTokenString(value: unknown, depth = 0): string | null {
+  if (depth > 5 || value == null) return null;
+  if (typeof value === "string" || typeof value === "number") return firstString(value);
+  const obj = asRecord(value);
+  if (!obj) return null;
+  return unwrapTokenString(
+    obj.family ??
+      obj.fontFamily ??
+      obj.font ??
+      obj.name ??
+      obj.label ??
+      obj.value ??
+      obj.$value ??
+      obj.DEFAULT ??
+      obj.default,
+    depth + 1,
+  );
+}
+
+function unwrapTokenWeight(value: unknown, depth = 0): string | null {
+  if (depth > 5 || value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return String(Math.round(value));
+  if (typeof value === "string" && value.trim()) {
+    const match = value.trim().match(/\b([1-9]00)\b/);
+    return match ? match[1] : null;
+  }
+  const obj = asRecord(value);
+  if (!obj) return null;
+  // Prefer explicit weight keys; do not treat a bare $value family string as a weight.
+  if ("weight" in obj || "fontWeight" in obj) {
+    return unwrapTokenWeight(obj.weight ?? obj.fontWeight, depth + 1);
+  }
+  return null;
+}
+
+function pickRoleNode(container: unknown, roles: string[]): unknown {
+  const obj = asRecord(container);
+  if (!obj) return null;
+  for (const role of roles) {
+    if (role in obj) return obj[role];
+  }
+  // nested fontFamily / families maps
+  for (const nestKey of ["fontFamily", "fontFamilies", "families", "fonts", "font"]) {
+    const nested = asRecord(obj[nestKey]);
+    if (!nested) continue;
+    for (const role of roles) {
+      if (role in nested) return nested[role];
+    }
+  }
+  return null;
+}
+
+function describeFace(node: unknown, fallbackWeight: number): string | null {
+  if (node == null) return null;
+  if (typeof node === "string") {
+    const cleaned = node.replace(/\s+/g, " ").trim();
+    if (!cleaned) return null;
+    // Already a full sentence / stack description
+    if (/ for (titles|support|body|headings?)/i.test(cleaned)) return cleaned;
+    const weightMatch = cleaned.match(/\b([1-9]00)\b/);
+    if (weightMatch) return cleaned;
+    return `${cleaned} ${fallbackWeight}`;
+  }
+
+  const obj = asRecord(node);
+  if (!obj) return null;
+
+  const family = unwrapTokenString(
+    obj.family ?? obj.fontFamily ?? obj.font ?? obj.name ?? obj.label ?? obj.value ?? obj.$value ?? node,
+  );
+  if (!family) return null;
+  const weight =
+    unwrapTokenWeight(obj.weight ?? obj.fontWeight ?? obj.value ?? obj.$value) ?? String(fallbackWeight);
+  // If family string already contains a weight, don't duplicate
+  if (/\b([1-9]00)\b/.test(family)) return family;
+  return `${family.replace(/^["']|["']$/g, "")} ${weight}`;
+}
+
+/** Build "Family 700 for titles, Family 500 for support" from many token shapes. */
+export function typographyFromTokens(tokens: unknown, cssText?: string): {
+  typography: string;
+  usedFallback: boolean;
+} {
+  const root = asRecord(tokens) ?? {};
+  const typographyNode =
+    root.typography ?? root.fonts ?? root.font ?? root.fontFamily ?? root.fontFamilies;
+
+  if (typeof typographyNode === "string" && typographyNode.trim()) {
+    return { typography: typographyNode.trim(), usedFallback: false };
+  }
+
+  const displayRoles = ["display", "heading", "title", "headline", "h1", "brand", "primary"];
+  const bodyRoles = ["body", "text", "support", "paragraph", "copy", "secondary", "ui"];
+
+  const displayNode =
+    pickRoleNode(typographyNode, displayRoles) ??
+    pickRoleNode(root.fontFamilies, displayRoles) ??
+    pickRoleNode(root.fontFamily, displayRoles) ??
+    pickRoleNode(root, displayRoles);
+  const bodyNode =
+    pickRoleNode(typographyNode, bodyRoles) ??
+    pickRoleNode(root.fontFamilies, bodyRoles) ??
+    pickRoleNode(root.fontFamily, bodyRoles) ??
+    pickRoleNode(root, bodyRoles);
+
+  const display = describeFace(displayNode, 700);
+  const body = describeFace(bodyNode, 500);
+
+  let typography = [display ? `${display} for titles` : null, body ? `${body} for support` : null]
+    .filter(Boolean)
+    .join(", ");
+
+  // Single family at typography.fontFamily / fonts.sans etc.
+  if (!typography) {
+    const single =
+      describeFace(pickRoleNode(typographyNode, ["sans", "sansSerif", "default", "base"]), 700) ??
+      describeFace(typographyNode, 700);
+    if (single && !asRecord(typographyNode)?.display && !asRecord(typographyNode)?.body) {
+      // Only treat as single if it resolved a family string, not a dump of the whole object
+      if (!single.includes("[object")) typography = `${single} for titles`;
+    }
+  }
+
+  if (!typography && cssText) {
+    typography = typographyFromCss(cssText);
+  }
+
+  if (!typography) {
+    return { typography: DEFAULT_TYPOGRAPHY, usedFallback: true };
+  }
+
+  return { typography, usedFallback: false };
+}
+
+export function typographyFromCss(css: string): string {
+  const families = new Map<string, string>();
+  const weights = new Map<string, string>();
+
+  for (const match of css.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*([^;}{]+)/g)) {
+    const key = match[1].toLowerCase();
+    const raw = match[2].trim().replace(/^["']|["']$/g, "");
+    if (/font.*family|family.*font|^font-?(display|heading|title|body|text|sans)?$/.test(key)) {
+      const role = /body|text|support|paragraph/.test(key)
+        ? "body"
+        : /display|heading|title|headline|brand/.test(key)
+          ? "display"
+          : key.includes("body")
+            ? "body"
+            : "display";
+      if (raw && !raw.startsWith("#") && !/^\d/.test(raw)) families.set(role, raw.split(",")[0].trim());
+    }
+    if (/font.*weight|weight/.test(key) && /\d{2,3}/.test(raw)) {
+      const role = /body|text|support/.test(key) ? "body" : "display";
+      weights.set(role, raw.match(/\d{2,3}/)![0]);
+    }
+  }
+
+  const display = families.get("display");
+  const body = families.get("body");
+  if (!display && !body) return "";
+  return [
+    display ? `${display} ${weights.get("display") ?? "700"} for titles` : null,
+    body ? `${body} ${weights.get("body") ?? "500"} for support` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+}
+
 export function paletteFromTokensJson(tokens: {
   palette?: unknown;
   colors?: unknown;
   colour?: unknown;
   color?: unknown;
   theme?: unknown;
-  typography?: {
-    display?: { family?: string; weight?: number };
-    body?: { family?: string; weight?: number };
-    heading?: { family?: string; weight?: number };
-    title?: { family?: string; weight?: number };
-  };
+  typography?: unknown;
   fonts?: unknown;
+  font?: unknown;
+  fontFamily?: unknown;
   motion?: { style?: string };
   [key: string]: unknown;
-}): { palette: BrandColor[]; typography: string; visualStyle?: string; usedFallback: boolean } {
+}): {
+  palette: BrandColor[];
+  typography: string;
+  visualStyle?: string;
+  usedFallback: boolean;
+  typographyFallback: boolean;
+} {
   const palette = extractPalette(tokens);
-  const display =
-    tokens.typography?.display ?? tokens.typography?.heading ?? tokens.typography?.title;
-  const body = tokens.typography?.body;
-  let typography =
-    display || body
-      ? [
-          display ? `${display.family ?? "Sans"} ${display.weight ?? 700} for titles` : null,
-          body ? `${body.family ?? "Sans"} ${body.weight ?? 500} for support` : null,
-        ]
-          .filter(Boolean)
-          .join(", ")
-      : "";
-
-  if (!typography && typeof tokens.fonts === "string") typography = tokens.fonts;
-  if (!typography) typography = "Inter 800 for titles, Inter 500 for support";
+  const type = typographyFromTokens(tokens);
 
   if (!palette.length) {
     return {
       palette: DEFAULT_COLORS.map((c) => ({ ...c })),
-      typography,
+      typography: type.typography,
       visualStyle: tokens.motion?.style,
       usedFallback: true,
+      typographyFallback: type.usedFallback,
     };
   }
 
   return {
     palette: palette.slice(0, MAX_BRAND_COLORS),
-    typography,
+    typography: type.typography,
     visualStyle: tokens.motion?.style,
     usedFallback: false,
+    typographyFallback: type.usedFallback,
   };
 }
 
 export function paletteFromTokensCss(css: string): BrandColor[] {
   return extractPalette(css);
 }
+
+export { DEFAULT_TYPOGRAPHY };
