@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getIdentity } from "../../../../cursor/identity";
+import { requireCaller } from "@/lib/require-caller";
 
 export const runtime = "nodejs";
 
@@ -47,19 +47,10 @@ function projectsDirFor(id: string): string | null {
 
 export async function POST(request: Request) {
   try {
-    const identity = await getIdentity(request);
-    const isLocalDev =
-      !process.env.CURSOR_APP_ID && !process.env.VERCEL && process.env.NODE_ENV !== "production";
+    const caller = await requireCaller(request);
+    if (!caller.ok) return caller.response;
 
-    if (!identity.verified && !isLocalDev) {
-      return NextResponse.json(
-        { ok: false, error: "unauthorized", reason: identity.reason },
-        { status: 401 },
-      );
-    }
-
-    const rateKey = identity.verified ? `id:${identity.sub}` : "local-dev";
-    if (!allowRequest(rateKey)) {
+    if (!allowRequest(`id:${caller.sub}`)) {
       return NextResponse.json({ ok: false, error: "rate limit exceeded" }, { status: 429 });
     }
 
@@ -99,7 +90,9 @@ export async function POST(request: Request) {
     const prompt = clip(body.prompt ?? "", MAX_PROMPT_CHARS);
     const brandName = clip(body.brandName ?? "", 200);
     const motionIds = Array.isArray(body.motionIds)
-      ? body.motionIds.filter((m): m is string => typeof m === "string" && ID_RE.test(m)).slice(0, 40)
+      ? body.motionIds
+          .filter((m): m is string => typeof m === "string" && ID_RE.test(m))
+          .slice(0, 40)
       : [];
 
     const storyboard = `# Storyboard — ${title}
@@ -128,10 +121,10 @@ This package was created by Digitalist Video Editor.
       brandName,
       motionIds,
       createdAt: new Date().toISOString(),
-      owner: identity.verified ? identity.sub : "local-dev",
+      owner: caller.sub,
     };
 
-    // On the published host, skip disk writes (ephemeral FS) and return the package.
+    const isLocalDev = !process.env.CURSOR_APP_ID && !process.env.VERCEL;
     const canWriteDisk = isLocalDev || process.env.DIGITALIST_WRITE_PROJECTS === "1";
     if (canWriteDisk) {
       await mkdir(root, { recursive: true });

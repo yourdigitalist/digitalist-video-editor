@@ -1,30 +1,40 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 import { SAMPLE_BRANDS, defaultConfig } from "@/lib/defaults";
+import { DEFAULT_COLORS, normalizePalette } from "@/lib/palette";
 import { buildMotionPrompt } from "@/lib/prompt-builder";
 import type {
   Brand,
-  BrandPalette,
+  BrandColor,
   ChatMessage,
   FeedbackItem,
   VideoConfig,
   VideoProject,
 } from "@/lib/types";
 
+/** Block persist writes until rehydrate finishes so SSR defaults can't overwrite saved brands. */
+let canPersist = false;
+
 interface EditorStore {
   brands: Brand[];
   videos: VideoProject[];
+  /** Once true, sample brands are never auto-restored (even if the list is empty). */
+  brandsSeeded: boolean;
   hydrated: boolean;
+  driveConnected: boolean;
   setHydrated: (v: boolean) => void;
+  setDriveConnected: (v: boolean) => void;
+  seedBrandsIfNeeded: () => void;
   addBrand: (input: {
     name: string;
     driveUrl?: string;
-    palette?: BrandPalette;
+    palette?: BrandColor[];
     typography?: string;
     notes?: string;
+    designSystemPath?: string;
   }) => Brand;
   updateBrand: (id: string, patch: Partial<Brand>) => void;
   deleteBrand: (id: string) => void;
@@ -40,7 +50,7 @@ interface EditorStore {
   setMotionIds: (id: string, motionIds: string[]) => void;
   rebuildPrompt: (id: string) => string;
   markGenerating: (id: string) => void;
-  markRendered: (id: string) => void;
+  markRendered: (id: string, drivePackageUrl?: string) => void;
   addChat: (videoId: string, role: ChatMessage["role"], body: string) => void;
   addFeedback: (videoId: string, body: string, atSec?: number) => void;
   resolveFeedback: (videoId: string, feedbackId: string) => void;
@@ -55,13 +65,50 @@ function slugify(name: string) {
     .replace(/(^-|-$)/g, "");
 }
 
+function migrateBrand(raw: Brand): Brand {
+  return {
+    ...raw,
+    palette: normalizePalette(raw.palette),
+    typography: raw.typography || "Inter 800 for titles, Inter 500 for support",
+  };
+}
+
+function migrateConfig(raw: Partial<VideoConfig> & Record<string, unknown>, brand?: Brand): VideoConfig {
+  const base = defaultConfig(brand);
+  const briefing =
+    typeof raw.briefing === "string" && raw.briefing
+      ? raw.briefing
+      : [raw.goal, raw.mandatoryTexts, raw.scriptText].filter((v) => typeof v === "string" && v.trim()).join("\n\n");
+  return {
+    ...base,
+    ...raw,
+    briefing,
+    palette: normalizePalette(raw.palette ?? brand?.palette ?? DEFAULT_COLORS),
+    stack: "html-svg-gsap",
+  } as VideoConfig;
+}
+
 export const useEditorStore = create<EditorStore>()(
   persist(
     (set, get) => ({
-      brands: SAMPLE_BRANDS,
+      brands: [],
       videos: [],
+      brandsSeeded: false,
       hydrated: false,
+      driveConnected: false,
       setHydrated: (v) => set({ hydrated: v }),
+      setDriveConnected: (v) => set({ driveConnected: v }),
+      seedBrandsIfNeeded: () => {
+        const state = get();
+        if (state.brandsSeeded) return;
+        set({
+          brands: SAMPLE_BRANDS.map((b) => ({
+            ...b,
+            palette: b.palette.map((c) => ({ ...c })),
+          })),
+          brandsSeeded: true,
+        });
+      },
 
       addBrand: (input) => {
         const now = new Date().toISOString();
@@ -70,37 +117,44 @@ export const useEditorStore = create<EditorStore>()(
           name: input.name,
           slug: slugify(input.name),
           driveUrl: input.driveUrl ?? "",
-          palette: input.palette ?? {
-            background: "#1F1D2B",
-            text: "#F4F4F9",
-            accent: "#FF7551",
-            support: "#8B7CF6",
-          },
-          typography: input.typography ?? "Inter 800 nos títulos, Inter 500 no apoio",
+          designSystemPath: input.designSystemPath,
+          palette: input.palette?.length
+            ? normalizePalette(input.palette)
+            : DEFAULT_COLORS.map((c) => ({ ...c })),
+          typography: input.typography ?? "Inter 800 for titles, Inter 500 for support",
           notes: input.notes ?? "",
           createdAt: now,
           updatedAt: now,
         };
-        set((s) => ({ brands: [brand, ...s.brands] }));
+        set((s) => ({ brands: [brand, ...s.brands], brandsSeeded: true }));
         return brand;
       },
 
       updateBrand: (id, patch) =>
         set((s) => ({
           brands: s.brands.map((b) =>
-            b.id === id ? { ...b, ...patch, updatedAt: new Date().toISOString() } : b,
+            b.id === id
+              ? {
+                  ...b,
+                  ...patch,
+                  palette: patch.palette ? normalizePalette(patch.palette) : b.palette,
+                  updatedAt: new Date().toISOString(),
+                }
+              : b,
           ),
+          brandsSeeded: true,
         })),
 
       deleteBrand: (id) =>
         set((s) => ({
           brands: s.brands.filter((b) => b.id !== id),
           videos: s.videos.filter((v) => v.brandId !== id),
+          brandsSeeded: true,
         })),
 
       createVideo: ({ title, brandId, config, motionIds }) => {
         const brand = get().brands.find((b) => b.id === brandId) ?? SAMPLE_BRANDS[0];
-        const fullConfig = { ...defaultConfig(brand), ...config };
+        const fullConfig = migrateConfig({ ...defaultConfig(brand), ...config }, brand);
         const ids = motionIds ?? [];
         const now = new Date().toISOString();
         const project: VideoProject = {
@@ -116,7 +170,7 @@ export const useEditorStore = create<EditorStore>()(
             {
               id: `msg_${nanoid(6)}`,
               role: "system",
-              body: "Chat is ready. After the first render, describe edits here — timing, copy, motion, brand fidelity.",
+              body: "Revision notes live here. They do not call Cursor AI by themselves — use Open in Cursor to run the package with your Cursor account / credits.",
               createdAt: now,
             },
           ],
@@ -182,10 +236,14 @@ export const useEditorStore = create<EditorStore>()(
         const video = get().videos.find((v) => v.id === id);
         const brand = get().brands.find((b) => b.id === video?.brandId);
         if (!video || !brand) return "";
+        const revisions = video.chat
+          .filter((m) => m.role === "user")
+          .map((m) => m.body);
         const prompt = buildMotionPrompt({
           brand,
           config: video.config,
           motionIds: video.motionIds,
+          revisions,
         });
         set((s) => ({
           videos: s.videos.map((v) =>
@@ -204,7 +262,7 @@ export const useEditorStore = create<EditorStore>()(
           ),
         })),
 
-      markRendered: (id) =>
+      markRendered: (id, drivePackageUrl) =>
         set((s) => ({
           videos: s.videos.map((v) =>
             v.id === id
@@ -212,6 +270,7 @@ export const useEditorStore = create<EditorStore>()(
                   ...v,
                   status: "rendered",
                   outputPath: `/api/videos/${id}/preview`,
+                  drivePackageUrl: drivePackageUrl ?? v.drivePackageUrl,
                   updatedAt: new Date().toISOString(),
                 }
               : v,
@@ -227,7 +286,7 @@ export const useEditorStore = create<EditorStore>()(
         };
         set((s) => ({
           videos: s.videos.map((v) =>
-            v.id === videoId
+            videoId === v.id
               ? { ...v, chat: [...v.chat, msg], updatedAt: new Date().toISOString() }
               : v,
           ),
@@ -272,7 +331,59 @@ export const useEditorStore = create<EditorStore>()(
     }),
     {
       name: "digitalist-video-editor",
+      skipHydration: true,
+      version: 3,
+      storage: createJSONStorage(() => {
+        if (typeof window === "undefined") {
+          return {
+            getItem: () => null,
+            setItem: () => undefined,
+            removeItem: () => undefined,
+          };
+        }
+        return {
+          getItem: (name) => localStorage.getItem(name),
+          setItem: (name, value) => {
+            // Avoid writing default empty/sample state over real data before rehydrate.
+            if (!canPersist) return;
+            localStorage.setItem(name, value);
+          },
+          removeItem: (name) => localStorage.removeItem(name),
+        };
+      }),
+      partialize: (s) => ({
+        brands: s.brands,
+        videos: s.videos,
+        brandsSeeded: s.brandsSeeded,
+        driveConnected: s.driveConnected,
+      }),
+      migrate: (persisted) => {
+        const state = (persisted ?? {}) as {
+          brands?: Brand[];
+          videos?: VideoProject[];
+          driveConnected?: boolean;
+          brandsSeeded?: boolean;
+        };
+        const brands = Array.isArray(state.brands)
+          ? state.brands.map(migrateBrand)
+          : SAMPLE_BRANDS.map((b) => ({ ...b, palette: b.palette.map((c) => ({ ...c })) }));
+        return {
+          brands,
+          // Any prior persisted brands list (including empty after deletes) means we already seeded.
+          brandsSeeded: state.brandsSeeded ?? Array.isArray(state.brands),
+          videos: (state.videos ?? []).map((v) => {
+            const brand = brands.find((b) => b.id === v.brandId);
+            return {
+              ...v,
+              config: migrateConfig(v.config as VideoConfig & Record<string, unknown>, brand),
+            };
+          }),
+          driveConnected: Boolean(state.driveConnected),
+        };
+      },
       onRehydrateStorage: () => (state) => {
+        canPersist = true;
+        state?.seedBrandsIfNeeded();
         state?.setHydrated(true);
       },
     },

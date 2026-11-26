@@ -31,8 +31,8 @@ export default function DashboardPage() {
             Edit videos with Cursor
           </h1>
           <p className="max-w-xl text-[var(--muted)]">
-            Upload a brand design system, pick motion blocks, hit Generate Video. Iterate with chat
-            and timestamped feedback once the first cut is ready.
+            Attach a brand design system from Google Drive, pick motion blocks, save a prompt
+            package, then open it in Cursor to render and revise with your account.
           </p>
           <div className="flex flex-wrap gap-3 pt-2">
             <Button asChild size="lg">
@@ -134,8 +134,8 @@ export default function DashboardPage() {
                     <div className="mt-1 text-xs text-[var(--muted)]">{brand.typography}</div>
                   </div>
                   <div className="flex gap-1.5">
-                    {Object.values(brand.palette).map((hex) => (
-                      <span key={hex} className="swatch" style={{ background: hex }} />
+                    {brand.palette.slice(0, 4).map((color) => (
+                      <span key={color.id} className="swatch" style={{ background: color.hex }} />
                     ))}
                   </div>
                 </div>

@@ -6,14 +6,17 @@ import { useParams, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
   CheckCircle2,
+  Copy,
+  ExternalLink,
+  Flag,
   MessageSquare,
   Sparkles,
-  Flag,
 } from "lucide-react";
 import { getMotionById } from "@/data/motion-gallery";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { StatusPill } from "@/components/dashboard/status-pill";
+import { colorByRole } from "@/lib/palette";
 import { useEditorStore } from "@/lib/store";
 import { formatRelative } from "@/lib/utils";
 
@@ -36,6 +39,7 @@ export function VideoDetailClient() {
   const [feedbackAt, setFeedbackAt] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const motions = useMemo(
     () => (video?.motionIds ?? []).map((id) => getMotionById(id)).filter(Boolean),
@@ -59,15 +63,16 @@ export function VideoDetailClient() {
     setLogs([]);
     const steps = [
       "Building deterministic GSAP prompt from brand + motion repertoire…",
-      "Writing storyboard outline from briefing / script…",
-      "Preparing HTML/SVG stage @ configured resolution…",
-      "Queuing Playwright frame capture + FFmpeg encode…",
-      "Saving project package (prompt, storyboard notes, deliverables flags)…",
+      "Writing storyboard outline from the briefing…",
+      "Preparing HTML/SVG stage defaults…",
+      "Saving project package (prompt + deliverables flags)…",
+      "Ready to hand off to a Cursor agent for the real render…",
     ];
     for (const step of steps) {
       setLogs((prev) => [...prev, step]);
-      await new Promise((r) => setTimeout(r, 550));
+      await new Promise((r) => setTimeout(r, 450));
     }
+    let drivePackageUrl: string | undefined;
     try {
       await fetch("/api/generate", {
         method: "POST",
@@ -81,14 +86,27 @@ export function VideoDetailClient() {
           motionIds: video.motionIds,
         }),
       });
+      const driveRes = await fetch("/api/drive/save-package", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          driveUrl: video.config.driveAssetsUrl || brand?.driveUrl,
+          title: video.title,
+          projectId: video.id,
+          prompt: prompt || video.prompt,
+        }),
+      });
+      const driveJson = (await driveRes.json()) as { url?: string; message?: string };
+      drivePackageUrl = driveJson.url;
+      if (driveJson.message) setLogs((prev) => [...prev, driveJson.message!]);
     } catch {
       // local persistence still succeeds in the UI store
     }
-    markRendered(video.id);
+    markRendered(video.id, drivePackageUrl);
     addChat(
       video.id,
       "assistant",
-      "First cut package is ready. Review the prompt and leave feedback with timestamps — I will revise the motion accordingly.",
+      "Prompt package saved. This dashboard does not render the MP4 itself — open the package in Cursor (your account / credits) to generate and revise the piece.",
     );
     setGenerating(false);
   }
@@ -99,13 +117,12 @@ export function VideoDetailClient() {
     const body = chatDraft.trim();
     addChat(video.id, "user", body);
     setChatDraft("");
-    setTimeout(() => {
-      addChat(
-        video.id,
-        "assistant",
-        `Noted. I'll adjust the piece with that feedback (“${body.slice(0, 120)}${body.length > 120 ? "…" : ""}”). Re-run Generate video when you want a new cut.`,
-      );
-    }, 400);
+    rebuildPrompt(video.id);
+    addChat(
+      video.id,
+      "assistant",
+      "Revision noted and folded into the prompt package. Use Open in Cursor to run it with your Cursor account — this panel does not call Cursor AI directly.",
+    );
   }
 
   function sendFeedback(e: React.FormEvent) {
@@ -115,6 +132,19 @@ export function VideoDetailClient() {
     addFeedback(video.id, feedbackDraft.trim(), Number.isFinite(at) ? at : undefined);
     setFeedbackDraft("");
     setFeedbackAt("");
+  }
+
+  async function openInCursor() {
+    if (!video) return;
+    const prompt = rebuildPrompt(video.id);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard may be blocked
+    }
+    window.open("https://cursor.com/agents", "_blank", "noopener,noreferrer");
   }
 
   if (!hydrated) {
@@ -132,6 +162,9 @@ export function VideoDetailClient() {
     );
   }
 
+  const accent = colorByRole(brand.palette, "accent");
+  const background = colorByRole(brand.palette, "background");
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -148,19 +181,17 @@ export function VideoDetailClient() {
           <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-[var(--muted)]">
             <StatusPill status={generating ? "generating" : video.status} />
             <span>{brand.name}</span>
-            <span>
-              {video.config.aspectRatio} · {video.config.durationSec}s · {video.config.fps}fps
-            </span>
             <span>Updated {formatRelative(video.updatedAt)}</span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" asChild>
-            <Link href="/videos/new">Duplicate settings</Link>
+          <Button variant="secondary" onClick={openInCursor}>
+            <ExternalLink className="h-4 w-4" />
+            {copied ? "Copied — open Cursor" : "Open in Cursor"}
           </Button>
           <Button disabled={generating} onClick={runGenerate}>
             <Sparkles className="h-4 w-4" />
-            {generating ? "Generating…" : "Generate video"}
+            {generating ? "Packaging…" : "Save package"}
           </Button>
         </div>
       </div>
@@ -170,36 +201,46 @@ export function VideoDetailClient() {
           <div
             className="relative aspect-[9/16] max-h-[640px] w-full bg-[#0b0a10] sm:mx-auto sm:max-w-sm"
             style={{
-              backgroundImage: `radial-gradient(circle at 50% 30%, ${brand.palette.accent}33, transparent 45%), linear-gradient(180deg, ${brand.palette.background}, #09080d)`,
+              backgroundImage: `radial-gradient(circle at 50% 30%, ${accent}33, transparent 45%), linear-gradient(180deg, ${background}, #09080d)`,
             }}
           >
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-8 text-center">
               <div className="chip">
                 {generating
-                  ? "Render in progress"
+                  ? "Building package"
                   : video.status === "rendered"
-                    ? "Saved package"
+                    ? "Package ready"
                     : "Preview"}
               </div>
               <div className="font-[family-name:var(--font-display)] text-3xl font-bold">
                 {brand.name}
               </div>
               <p className="max-w-xs text-sm text-[var(--muted)]">
-                {video.config.goal ||
-                  "Preview stage — Cursor uses the generated prompt to produce motion.mp4 via GSAP + Playwright + FFmpeg."}
+                {video.config.briefing.trim().slice(0, 140) ||
+                  "Preview stage — Cursor agents use the saved prompt to produce motion.mp4 via GSAP + Playwright + FFmpeg."}
               </p>
               {video.status === "rendered" ? (
                 <div className="flex items-center gap-2 text-sm text-[#7dffb1]">
                   <CheckCircle2 className="h-4 w-4" />
-                  Package saved · ready for chat edits
+                  Prompt package saved — open in Cursor to render & edit
                 </div>
+              ) : null}
+              {video.drivePackageUrl ? (
+                <a
+                  className="text-xs text-[var(--accent)] hover:underline"
+                  href={video.drivePackageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Drive folder
+                </a>
               ) : null}
             </div>
           </div>
           {logs.length > 0 ? (
             <div className="border-t border-[var(--border)] p-4">
               <div className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--muted)]">
-                Generate log
+                Package log
               </div>
               <ul className="space-y-1 text-sm text-[var(--muted)]">
                 {logs.map((line) => (
@@ -217,7 +258,7 @@ export function VideoDetailClient() {
             {(
               [
                 ["prompt", "Prompt"],
-                ["chat", "Chat"],
+                ["chat", "Revisions"],
                 ["feedback", "Feedback"],
               ] as const
             ).map(([id, label]) => (
@@ -239,8 +280,14 @@ export function VideoDetailClient() {
 
           {tab === "prompt" && (
             <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-              <div className="text-xs text-[var(--muted)]">
-                {video.prompt.length.toLocaleString()} caracteres · {motions.length} motions
+              <div className="flex items-center justify-between gap-2 text-xs text-[var(--muted)]">
+                <span>
+                  {video.prompt.length.toLocaleString()} characters · {motions.length} motions
+                </span>
+                <Button type="button" size="sm" variant="ghost" onClick={openInCursor}>
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy & open Cursor
+                </Button>
               </div>
               <div className="flex flex-wrap gap-2">
                 {motions.map((m) => (
@@ -257,6 +304,10 @@ export function VideoDetailClient() {
 
           {tab === "chat" && (
             <div className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b border-[var(--border)] px-4 py-3 text-xs text-[var(--muted)]">
+                Revision notes only — not a live Cursor chat. They update the package; Open in Cursor
+                runs them with your Cursor credits.
+              </div>
               <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
                 {video.chat.map((msg) => (
                   <div
@@ -281,11 +332,14 @@ export function VideoDetailClient() {
                 <Textarea
                   value={chatDraft}
                   onChange={(e) => setChatDraft(e.target.value)}
-                  placeholder="Ask Cursor to revise timing, copy, motion, brand fidelity…"
+                  placeholder="Revision note: timing, copy, motion, brand fidelity…"
                 />
-                <div className="mt-2 flex justify-end">
+                <div className="mt-2 flex justify-end gap-2">
+                  <Button type="button" size="sm" variant="secondary" onClick={openInCursor}>
+                    Open in Cursor
+                  </Button>
                   <Button type="submit" size="sm">
-                    Send
+                    Add revision
                   </Button>
                 </div>
               </form>
