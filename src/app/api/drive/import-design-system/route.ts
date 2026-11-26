@@ -12,6 +12,22 @@ const LOCAL_SAMPLES: Record<string, string> = {
   fungal: "examples/brands/fungal-dreams/tokens.json",
 };
 
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 20;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function allowRequest(key: string): boolean {
+  const now = Date.now();
+  const current = rateBuckets.get(key);
+  if (!current || now >= current.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= RATE_MAX) return false;
+  current.count += 1;
+  return true;
+}
+
 async function loadLocalTokens(hint: string) {
   const key = Object.keys(LOCAL_SAMPLES).find((k) => hint.toLowerCase().includes(k));
   if (!key) return null;
@@ -28,35 +44,107 @@ async function loadLocalTokens(hint: string) {
   };
 }
 
-async function loadDriveTokens(folderId: string) {
-  const key = process.env.GOOGLE_DRIVE_API_KEY?.trim();
-  if (!key) return null;
+type DriveList = {
+  files?: { id: string; name: string }[];
+  error?: { message?: string; status?: string };
+};
 
+async function driveList(folderId: string, apiKey: string, query: string) {
   const listUrl = new URL("https://www.googleapis.com/drive/v3/files");
-  listUrl.searchParams.set("q", `'${folderId}' in parents and name='tokens.json' and trashed=false`);
-  listUrl.searchParams.set("fields", "files(id,name)");
-  listUrl.searchParams.set("pageSize", "1");
-  listUrl.searchParams.set("key", key);
+  listUrl.searchParams.set("q", query);
+  listUrl.searchParams.set("fields", "files(id,name,mimeType)");
+  listUrl.searchParams.set("pageSize", "25");
+  listUrl.searchParams.set("supportsAllDrives", "true");
+  listUrl.searchParams.set("includeItemsFromAllDrives", "true");
+  listUrl.searchParams.set("corpora", "allDrives");
+  listUrl.searchParams.set("key", apiKey);
 
   const listRes = await fetch(listUrl);
+  const listJson = (await listRes.json()) as DriveList;
   if (!listRes.ok) {
-    throw new Error(`Drive list failed (${listRes.status})`);
+    const message = listJson.error?.message || `Drive list failed (${listRes.status})`;
+    throw new Error(message);
   }
-  const listJson = (await listRes.json()) as { files?: { id: string }[] };
-  const fileId = listJson.files?.[0]?.id;
-  if (!fileId) return null;
+  return listJson.files ?? [];
+}
 
-  const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${fileId}`);
+async function loadDriveTokens(folderId: string): Promise<
+  | { ok: true; tokens: Parameters<typeof paletteFromTokensJson>[0] & { name?: string } }
+  | { ok: false; error: string }
+> {
+  const key = process.env.GOOGLE_DRIVE_API_KEY?.trim();
+  if (!key) {
+    return {
+      ok: false,
+      error: "GOOGLE_DRIVE_API_KEY is not set on the server yet.",
+    };
+  }
+
+  // Probe folder access first — API keys only see public / link-shared files.
+  const children = await driveList(
+    folderId,
+    key,
+    `'${folderId}' in parents and trashed=false`,
+  );
+
+  if (!children.length) {
+    return {
+      ok: false,
+      error:
+        "Drive folder looks empty or inaccessible with an API key. Share the folder as “Anyone with the link → Viewer” (or use a service account), confirm the full folder URL, and put tokens.json inside it.",
+    };
+  }
+
+  const tokensFile =
+    children.find((f) => f.name.toLowerCase() === "tokens.json") ??
+    (
+      await driveList(
+        folderId,
+        key,
+        `'${folderId}' in parents and name contains 'tokens' and trashed=false`,
+      )
+    ).find((f) => f.name.toLowerCase().endsWith(".json"));
+
+  if (!tokensFile) {
+    const names = children.map((f) => f.name).slice(0, 8).join(", ");
+    return {
+      ok: false,
+      error: `No tokens.json in that folder. Files seen: ${names || "(none)"}. Add a tokens.json with palette + typography.`,
+    };
+  }
+
+  const fileUrl = new URL(`https://www.googleapis.com/drive/v3/files/${tokensFile.id}`);
   fileUrl.searchParams.set("alt", "media");
+  fileUrl.searchParams.set("supportsAllDrives", "true");
   fileUrl.searchParams.set("key", key);
   const fileRes = await fetch(fileUrl);
-  if (!fileRes.ok) throw new Error(`Drive download failed (${fileRes.status})`);
-  return (await fileRes.json()) as Parameters<typeof paletteFromTokensJson>[0] & { name?: string };
+  if (!fileRes.ok) {
+    return {
+      ok: false,
+      error: `Found ${tokensFile.name} but could not download it (${fileRes.status}). Make that file link-shared as Viewer.`,
+    };
+  }
+
+  try {
+    const tokens = (await fileRes.json()) as Parameters<typeof paletteFromTokensJson>[0] & {
+      name?: string;
+    };
+    return { ok: true, tokens };
+  } catch {
+    return {
+      ok: false,
+      error: `${tokensFile.name} is not valid JSON.`,
+    };
+  }
 }
 
 export async function POST(request: Request) {
   const caller = await requireCaller(request);
   if (!caller.ok) return caller.response;
+
+  if (!allowRequest(`drive-import:${caller.sub}`)) {
+    return NextResponse.json({ ok: false, error: "rate limit exceeded" }, { status: 429 });
+  }
 
   try {
     const body = (await request.json()) as {
@@ -68,13 +156,30 @@ export async function POST(request: Request) {
     const pathHint = String(body.designSystemPath ?? body.brandName ?? "");
     const folderId = extractDriveFolderId(driveUrl);
 
-    let tokens: Awaited<ReturnType<typeof loadDriveTokens>> | Awaited<ReturnType<typeof loadLocalTokens>> =
-      null;
+    if (driveUrl && !folderId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Could not read a folder id from that Google Drive link. Paste the full folders/… URL.",
+        },
+        { status: 400 },
+      );
+    }
+
+    let tokens: Awaited<ReturnType<typeof loadLocalTokens>> = null;
     let source: "google-drive" | "local-sample" | "none" = "none";
+    let driveError: string | null = null;
 
     if (folderId && driveConfigured()) {
-      tokens = await loadDriveTokens(folderId);
-      if (tokens) source = "google-drive";
+      const driveResult = await loadDriveTokens(folderId);
+      if (driveResult.ok) {
+        tokens = driveResult.tokens;
+        source = "google-drive";
+      } else {
+        driveError = driveResult.error;
+      }
+    } else if (folderId && !driveConfigured()) {
+      driveError = "Drive API key is not configured on the server.";
     }
 
     if (!tokens) {
@@ -87,8 +192,10 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            "No tokens.json found. Add tokens.json to the Drive folder (with API key), or use a known sample brand path.",
+            driveError ||
+            "No tokens.json found. Add tokens.json to the Drive folder and share it as Anyone with the link (Viewer).",
           configured: driveConfigured(),
+          folderId,
         },
         { status: 404 },
       );
