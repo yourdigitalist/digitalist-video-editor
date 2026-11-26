@@ -1,16 +1,21 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { getIdentity } from "../../../../cursor/identity";
 
 export const runtime = "nodejs";
 
-const MAX_BODY_BYTES = 512_000;
+const MAX_BODY_BYTES = 256_000;
+const MAX_PROMPT_CHARS = 100_000;
 const ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 20;
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 function safeProjectId(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   if (!ID_RE.test(raw)) return null;
-  if (raw.includes("..") || raw.includes("/") || raw.includes("\\")) return null;
   return raw;
 }
 
@@ -19,10 +24,52 @@ function clip(value: unknown, max: number): string {
   return text.slice(0, max);
 }
 
+function allowRequest(key: string): boolean {
+  const now = Date.now();
+  const current = rateBuckets.get(key);
+  if (!current || now >= current.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true;
+  }
+  if (current.count >= RATE_MAX) return false;
+  current.count += 1;
+  return true;
+}
+
+function projectsDirFor(id: string): string | null {
+  const projectsRoot = path.resolve(process.cwd(), "data", "projects");
+  const root = path.resolve(projectsRoot, id);
+  const relative = path.relative(projectsRoot, root);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  if (relative.includes(path.sep)) return null;
+  return root;
+}
+
 export async function POST(request: Request) {
   try {
+    const identity = await getIdentity(request);
+    const isLocalDev =
+      !process.env.CURSOR_APP_ID && !process.env.VERCEL && process.env.NODE_ENV !== "production";
+
+    if (!identity.verified && !isLocalDev) {
+      return NextResponse.json(
+        { ok: false, error: "unauthorized", reason: identity.reason },
+        { status: 401 },
+      );
+    }
+
+    const rateKey = identity.verified ? `id:${identity.sub}` : "local-dev";
+    if (!allowRequest(rateKey)) {
+      return NextResponse.json({ ok: false, error: "rate limit exceeded" }, { status: 429 });
+    }
+
+    const contentType = request.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      return NextResponse.json({ ok: false, error: "unsupported content type" }, { status: 415 });
+    }
+
     const contentLength = Number(request.headers.get("content-length") ?? "0");
-    if (contentLength > MAX_BODY_BYTES) {
+    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
       return NextResponse.json({ ok: false, error: "payload too large" }, { status: 413 });
     }
 
@@ -43,20 +90,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "invalid project id" }, { status: 400 });
     }
 
-    const title = clip(body.title ?? "untitled", 200);
-    const prompt = clip(body.prompt ?? "", 200_000);
-    const brandName = clip(body.brandName ?? "", 200);
-    const motionIds = Array.isArray(body.motionIds)
-      ? body.motionIds.filter((m): m is string => typeof m === "string").slice(0, 50)
-      : [];
-
-    const projectsRoot = path.resolve(process.cwd(), "data", "projects");
-    const root = path.resolve(projectsRoot, id);
-    if (!root.startsWith(projectsRoot + path.sep)) {
+    const root = projectsDirFor(id);
+    if (!root) {
       return NextResponse.json({ ok: false, error: "invalid project path" }, { status: 400 });
     }
 
-    await mkdir(root, { recursive: true });
+    const title = clip(body.title ?? "untitled", 200);
+    const prompt = clip(body.prompt ?? "", MAX_PROMPT_CHARS);
+    const brandName = clip(body.brandName ?? "", 200);
+    const motionIds = Array.isArray(body.motionIds)
+      ? body.motionIds.filter((m): m is string => typeof m === "string" && ID_RE.test(m)).slice(0, 40)
+      : [];
 
     const storyboard = `# Storyboard — ${title}
 
@@ -68,7 +112,6 @@ ${motionIds.map((m) => `- ${m}`).join("\n") || "- (none)"}
 
 ## Notes
 This package was created by Digitalist Video Editor.
-A Cursor agent should expand this into timed blocks, then implement HTML/SVG + GSAP and render via Playwright + FFmpeg.
 `;
 
     const readme = `# ${title}
@@ -76,36 +119,37 @@ A Cursor agent should expand this into timed blocks, then implement HTML/SVG + G
 ## Render again
 
 1. Open \`prompt.md\`
-2. Ask Cursor to follow the pipeline (storyboard → index.html GSAP timeline → render.mjs → ffmpeg)
-3. Deliverables requested are listed in the prompt \`<entrega>\` section.
-
-Brand Drive / assets should be pulled before frame 0.
+2. Follow the pipeline in the prompt (storyboard → GSAP timeline → Playwright → ffmpeg)
 `;
 
-    await writeFile(path.join(root, "prompt.md"), prompt, "utf8");
-    await writeFile(path.join(root, "storyboard.md"), storyboard, "utf8");
-    await writeFile(path.join(root, "README.md"), readme, "utf8");
-    await writeFile(
-      path.join(root, "meta.json"),
-      JSON.stringify(
-        {
-          id,
-          title,
-          brandName,
-          config: body.config ?? null,
-          motionIds,
-          createdAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
+    const meta = {
+      id,
+      title,
+      brandName,
+      motionIds,
+      createdAt: new Date().toISOString(),
+      owner: identity.verified ? identity.sub : "local-dev",
+    };
+
+    // On the published host, skip disk writes (ephemeral FS) and return the package.
+    const canWriteDisk = isLocalDev || process.env.DIGITALIST_WRITE_PROJECTS === "1";
+    if (canWriteDisk) {
+      await mkdir(root, { recursive: true });
+      await writeFile(path.join(root, "prompt.md"), prompt, "utf8");
+      await writeFile(path.join(root, "storyboard.md"), storyboard, "utf8");
+      await writeFile(path.join(root, "README.md"), readme, "utf8");
+      await writeFile(path.join(root, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
+    }
 
     return NextResponse.json({
       ok: true,
-      projectDir: `data/projects/${id}`,
-      files: ["prompt.md", "storyboard.md", "README.md", "meta.json"],
+      projectDir: canWriteDisk ? `data/projects/${id}` : null,
+      files: {
+        "prompt.md": prompt,
+        "storyboard.md": storyboard,
+        "README.md": readme,
+        "meta.json": meta,
+      },
     });
   } catch (error) {
     return NextResponse.json(
