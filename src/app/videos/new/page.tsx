@@ -1,13 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, Plus, Search, Sparkles, X } from "lucide-react";
 import { MOTION_CATEGORIES, MOTION_GALLERY } from "@/data/motion-gallery";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { ConfigSummary, type ConfigTab } from "@/components/video/config-summary";
-import { defaultConfig } from "@/lib/defaults";
+import { SAMPLE_BRANDS, defaultConfig } from "@/lib/defaults";
 import { buildMotionPrompt } from "@/lib/prompt-builder";
 import { useEditorStore } from "@/lib/store";
 import type { VideoConfig } from "@/lib/types";
@@ -18,10 +19,11 @@ export default function NewVideoPage() {
   const brands = useEditorStore((s) => s.brands);
   const createVideo = useEditorStore((s) => s.createVideo);
 
+  const availableBrands = brands.length ? brands : SAMPLE_BRANDS;
   const [title, setTitle] = useState("Untitled motion piece");
-  const [brandId, setBrandId] = useState(brands[0]?.id ?? "");
-  const brand = brands.find((b) => b.id === brandId) ?? brands[0];
-  const [config, setConfig] = useState<VideoConfig>(() => defaultConfig(brands[0]));
+  const [brandId, setBrandId] = useState(availableBrands[0]?.id ?? "");
+  const brand = availableBrands.find((b) => b.id === brandId) ?? availableBrands[0];
+  const [config, setConfig] = useState<VideoConfig>(() => defaultConfig(availableBrands[0]));
   const [tab, setTab] = useState<ConfigTab>("base");
   const [motionIds, setMotionIds] = useState<string[]>([
     "orbit-loop",
@@ -31,6 +33,10 @@ export default function NewVideoPage() {
   ]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!brandId && availableBrands[0]) setBrandId(availableBrands[0].id);
+  }, [availableBrands, brandId]);
 
   const prompt = useMemo(() => {
     if (!brand) return "";
@@ -68,8 +74,19 @@ export default function NewVideoPage() {
     router.push(`/videos/${project.id}?generate=1`);
   }
 
-  if (!hydrated || !brand) {
+  if (!hydrated) {
     return <div className="panel p-10 text-[var(--muted)]">Loading editor…</div>;
+  }
+
+  if (!brand) {
+    return (
+      <div className="panel space-y-4 p-10">
+        <p>Add a brand before creating a video.</p>
+        <Button asChild>
+          <Link href="/brands">Go to Brands</Link>
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -93,7 +110,7 @@ export default function NewVideoPage() {
               className="h-10 rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-3 text-sm"
               value={brand.id}
               onChange={(e) => {
-                const next = brands.find((b) => b.id === e.target.value);
+                const next = availableBrands.find((b) => b.id === e.target.value);
                 setBrandId(e.target.value);
                 if (next) {
                   setConfig((c) => ({
@@ -105,7 +122,7 @@ export default function NewVideoPage() {
                 }
               }}
             >
-              {brands.map((b) => (
+              {availableBrands.map((b) => (
                 <option key={b.id} value={b.id}>
                   {b.name}
                 </option>

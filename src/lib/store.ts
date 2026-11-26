@@ -272,6 +272,7 @@ export const useEditorStore = create<EditorStore>()(
     }),
     {
       name: "digitalist-video-editor",
+      skipHydration: true,
       onRehydrateStorage: () => (state) => {
         state?.setHydrated(true);
       },

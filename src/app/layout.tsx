@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Syne } from "next/font/google";
 import { AppShell } from "@/components/layout/app-shell";
+import { StoreHydration } from "@/components/providers/store-hydration";
 import "./globals.css";
 
 const inter = Inter({
@@ -32,7 +33,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           } as React.CSSProperties
         }
       >
-        <AppShell>{children}</AppShell>
+        <StoreHydration>
+          <AppShell>{children}</AppShell>
+        </StoreHydration>
       </body>
     </html>
   );
