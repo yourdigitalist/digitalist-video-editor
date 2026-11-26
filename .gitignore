@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+references
+data/projects/*
+!data/projects/.gitignore
+.DS_Store
+*.mp4
+*.webm
+.env*
+!.env.example

@@ -1,0 +1,17 @@
+{
+  "brand": "Fungal Dreams",
+  "assets": {
+    "logos": ["logo-mark.svg", "logo-wordmark.svg", "fd-flask-mushroom.svg"],
+    "icons": [
+      "syringe-swab.svg",
+      "gusset-bags.svg",
+      "petri-tube.svg",
+      "top-fruiting-bag.svg",
+      "side-fruiting-bag.svg",
+      "scale.svg",
+      "book.svg"
+    ],
+    "plates": ["mushroom-01.png", "mushroom-02.png", "mushroom-03.png", "mushroom-04.png"],
+    "drive": "https://drive.google.com/drive/folders/example-fungal-dreams"
+  }
+}
