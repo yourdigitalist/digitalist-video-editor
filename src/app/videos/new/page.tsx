@@ -8,10 +8,12 @@ import { MOTION_CATEGORIES, MOTION_GALLERY } from "@/data/motion-gallery";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { ConfigSummary, type ConfigTab } from "@/components/video/config-summary";
+import { MotionPreview } from "@/components/video/motion-preview";
 import { SAMPLE_BRANDS, defaultConfig } from "@/lib/defaults";
+import { MAX_BRAND_COLORS, colorByRole, normalizePalette } from "@/lib/palette";
 import { buildMotionPrompt } from "@/lib/prompt-builder";
 import { useEditorStore } from "@/lib/store";
-import type { VideoConfig } from "@/lib/types";
+import { VISUAL_STYLES, type BrandColor, type VideoConfig, type VisualStyle } from "@/lib/types";
 
 export default function NewVideoPage() {
   const router = useRouter();
@@ -33,6 +35,7 @@ export default function NewVideoPage() {
   ]);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hoverMotion, setHoverMotion] = useState<string | null>(null);
 
   const seededFromHydration = useRef(false);
   useEffect(() => {
@@ -64,6 +67,49 @@ export default function NewVideoPage() {
     setConfig((c) => ({ ...c, ...patch }));
   }
 
+  function applyBrand(nextId: string) {
+    const next = availableBrands.find((b) => b.id === nextId);
+    setBrandId(nextId);
+    if (!next) return;
+    setConfig((c) => ({
+      ...c,
+      palette: normalizePalette(next.palette),
+      typography: next.typography,
+      driveAssetsUrl: next.driveUrl || c.driveAssetsUrl,
+    }));
+  }
+
+  function updateColor(index: number, patch: Partial<BrandColor>) {
+    setConfig((c) => {
+      const palette = c.palette.map((color, i) => (i === index ? { ...color, ...patch } : color));
+      return { ...c, palette };
+    });
+  }
+
+  function addColor() {
+    setConfig((c) => {
+      if (c.palette.length >= MAX_BRAND_COLORS) return c;
+      return {
+        ...c,
+        palette: [
+          ...c.palette,
+          {
+            id: `c_custom_${c.palette.length + 1}`,
+            role: `color-${c.palette.length + 1}`,
+            hex: "#888888",
+          },
+        ],
+      };
+    });
+  }
+
+  function removeColor(index: number) {
+    setConfig((c) => ({
+      ...c,
+      palette: c.palette.length <= 1 ? c.palette : c.palette.filter((_, i) => i !== index),
+    }));
+  }
+
   function toggleMotion(id: string) {
     setMotionIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
   }
@@ -77,7 +123,6 @@ export default function NewVideoPage() {
       config,
       motionIds,
     });
-    // Simulate generate kickoff; detail page runs the job UX
     router.push(`/videos/${project.id}?generate=1`);
   }
 
@@ -96,15 +141,20 @@ export default function NewVideoPage() {
     );
   }
 
+  const accent = colorByRole(config.palette, "accent");
+  const support = colorByRole(config.palette, "support");
+
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="font-[family-name:var(--font-display)] text-3xl font-bold">
-              1. Configure a base
+              1. Brief & brand
             </h1>
-            <p className="mt-1 text-sm text-[var(--muted)]">vale para a peça inteira</p>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              Keep format, duration, and copy in the briefing. Colors come from the design system first.
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Input
@@ -116,18 +166,7 @@ export default function NewVideoPage() {
             <select
               className="h-10 rounded-xl border border-[var(--border)] bg-[var(--panel-2)] px-3 text-sm"
               value={brand.id}
-              onChange={(e) => {
-                const next = availableBrands.find((b) => b.id === e.target.value);
-                setBrandId(e.target.value);
-                if (next) {
-                  setConfig((c) => ({
-                    ...c,
-                    palette: next.palette,
-                    typography: next.typography,
-                    driveAssetsUrl: next.driveUrl ?? c.driveAssetsUrl,
-                  }));
-                }
-              }}
+              onChange={(e) => applyBrand(e.target.value)}
             >
               {availableBrands.map((b) => (
                 <option key={b.id} value={b.id}>
@@ -143,238 +182,131 @@ export default function NewVideoPage() {
         <div className="panel space-y-5 p-6">
           {tab === "base" && (
             <>
-              <p className="text-sm text-[var(--muted)]">
-                Material that drives timing and emphasis for the whole piece.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {(
-                  [
-                    ["script", "Roteiro anexado"],
-                    ["audio", "Áudio anexado"],
-                    ["video", "Vídeo anexado"],
-                    ["briefing", "Só briefing"],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="chip"
-                    data-active={config.base === id}
-                    onClick={() => patchConfig({ base: id })}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
               <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Objetivo da peça</span>
+                <span className="text-[var(--muted)]">Briefing</span>
                 <Textarea
-                  value={config.goal}
-                  onChange={(e) => patchConfig({ goal: e.target.value })}
-                  placeholder="What this piece must communicate"
+                  className="min-h-[180px]"
+                  value={config.briefing}
+                  onChange={(e) => patchConfig({ briefing: e.target.value })}
+                  placeholder="Paste the brief: goal, mandatory lines, format (9:16 / 16:9), duration, tone, CTA…"
                 />
               </label>
               <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Textos obrigatórios</span>
-                <Textarea
-                  value={config.mandatoryTexts}
-                  onChange={(e) => patchConfig({ mandatoryTexts: e.target.value })}
-                  placeholder="Exact lines that must appear on screen"
-                />
-              </label>
-              <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Roteiro / script</span>
-                <Textarea
-                  className="min-h-[140px]"
-                  value={config.scriptText}
-                  onChange={(e) => patchConfig({ scriptText: e.target.value })}
-                  placeholder="Paste the script here when base is roteiro"
-                />
-              </label>
-              <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Marca e assets (Google Drive)</span>
+                <span className="text-[var(--muted)]">Google Drive assets folder</span>
                 <Input
                   value={config.driveAssetsUrl}
                   onChange={(e) => patchConfig({ driveAssetsUrl: e.target.value })}
                   placeholder="https://drive.google.com/drive/folders/…"
                 />
+                <p className="text-xs text-[var(--muted)]">
+                  Logos, photos, and design-system files for this piece. Connect Drive in Settings for API sync.
+                </p>
+              </label>
+              <label className="block space-y-2 text-sm">
+                <span className="text-[var(--muted)]">Extra notes</span>
+                <Textarea
+                  value={config.extraNotes}
+                  onChange={(e) => patchConfig({ extraNotes: e.target.value })}
+                  placeholder="Anything the agent should not invent or must protect"
+                />
               </label>
             </>
           )}
 
-          {tab === "stack" && (
-            <div className="space-y-3 text-sm text-[var(--muted)]">
-              <p>
-                Stack locked to <strong className="text-[var(--text)]">HTML/SVG + GSAP</strong> —
-                deterministic paused timeline, Playwright frame capture, FFmpeg MP4.
-              </p>
-              <p>Remotion / HyperFrames skills are installed for agents that prefer those engines.</p>
-            </div>
-          )}
-
-          {tab === "format" && (
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="space-y-4">
-                <div>
-                  <div className="mb-2 text-sm text-[var(--muted)]">Proporção</div>
-                  <div className="flex flex-wrap gap-2">
-                    {(["9:16", "4:5", "1:1", "16:9", "21:9"] as const).map((ratio) => (
-                      <button
-                        key={ratio}
-                        type="button"
-                        className="chip"
-                        data-active={config.aspectRatio === ratio}
-                        onClick={() => patchConfig({ aspectRatio: ratio })}
-                      >
-                        {ratio}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="mb-2 text-sm text-[var(--muted)]">FPS</div>
-                  <div className="flex gap-2">
-                    {([24, 30, 60] as const).map((fps) => (
-                      <button
-                        key={fps}
-                        type="button"
-                        className="chip"
-                        data-active={config.fps === fps}
-                        onClick={() => patchConfig({ fps })}
-                      >
-                        {fps}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="mb-2 text-sm text-[var(--muted)]">Qualidade</div>
-                  <div className="flex gap-2">
-                    {(
-                      [
-                        ["high", "Alta"],
-                        ["standard", "Padrão"],
-                        ["light", "Leve"],
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        className="chip"
-                        data-active={config.quality === id}
-                        onClick={() => patchConfig({ quality: id })}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-4">
-                <label className="block space-y-2 text-sm">
-                  <span className="text-[var(--muted)]">
-                    Duração aproximada — {config.durationSec}s
-                  </span>
-                  <input
-                    type="range"
-                    min={3}
-                    max={60}
-                    value={config.durationSec}
-                    onChange={(e) => patchConfig({ durationSec: Number(e.target.value) })}
-                    className="w-full accent-[var(--accent)]"
-                  />
-                </label>
-                <div>
-                  <div className="mb-2 text-sm text-[var(--muted)]">Fundo</div>
-                  <div className="flex flex-wrap gap-2">
-                    {(
-                      [
-                        ["solid", "Sólido"],
-                        ["gradient", "Gradiente"],
-                        ["transparent", "Transparente"],
-                      ] as const
-                    ).map(([id, label]) => (
-                      <button
-                        key={id}
-                        type="button"
-                        className="chip"
-                        data-active={config.background === id}
-                        onClick={() => patchConfig({ background: id })}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
           {tab === "visual" && (
-            <div className="space-y-5">
+            <div className="space-y-6">
               <div>
-                <div className="mb-2 text-sm text-[var(--muted)]">Paleta (ordem = fundo, texto, destaque, apoio)</div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  {(
-                    [
-                      ["background", "Fundo"],
-                      ["text", "Texto"],
-                      ["accent", "Destaque"],
-                      ["support", "Apoio"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label key={key} className="panel-inset space-y-2 p-3 text-sm">
-                      <span className="text-[var(--muted)]">{label}</span>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="text-sm text-[var(--muted)]">
+                    Colors from design system (up to {MAX_BRAND_COLORS})
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={config.palette.length >= MAX_BRAND_COLORS}
+                    onClick={addColor}
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add color
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {config.palette.map((color, index) => (
+                    <div key={color.id} className="panel-inset space-y-2 p-3 text-sm">
                       <div className="flex items-center gap-2">
                         <input
                           type="color"
-                          value={config.palette[key]}
-                          onChange={(e) =>
-                            patchConfig({
-                              palette: { ...config.palette, [key]: e.target.value },
-                            })
-                          }
+                          value={color.hex}
+                          onChange={(e) => updateColor(index, { hex: e.target.value })}
                           className="h-9 w-10 cursor-pointer rounded border-0 bg-transparent"
                         />
                         <Input
-                          value={config.palette[key]}
-                          onChange={(e) =>
-                            patchConfig({
-                              palette: { ...config.palette, [key]: e.target.value },
-                            })
-                          }
-                          className="mono"
+                          value={color.role}
+                          onChange={(e) => updateColor(index, { role: e.target.value })}
+                          placeholder="role"
                         />
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          aria-label="Remove color"
+                          onClick={() => removeColor(index)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
                       </div>
-                    </label>
+                      <Input
+                        className="mono"
+                        value={color.hex}
+                        onChange={(e) => updateColor(index, { hex: e.target.value })}
+                      />
+                    </div>
                   ))}
                 </div>
               </div>
+
               <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Tipografia</span>
+                <span className="text-[var(--muted)]">Typography</span>
                 <Input
                   value={config.typography}
                   onChange={(e) => patchConfig({ typography: e.target.value })}
                 />
               </label>
+
               <div>
-                <div className="mb-2 text-sm text-[var(--muted)]">Estilo</div>
+                <div className="mb-2 text-sm text-[var(--muted)]">Style (pick from brief)</div>
+                <div className="flex flex-wrap gap-2">
+                  {VISUAL_STYLES.map((style) => (
+                    <button
+                      key={style.id}
+                      type="button"
+                      className="chip"
+                      title={style.hint}
+                      data-active={config.visualStyle === style.id}
+                      onClick={() => patchConfig({ visualStyle: style.id as VisualStyle })}
+                    >
+                      {style.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 text-sm text-[var(--muted)]">Background</div>
                 <div className="flex flex-wrap gap-2">
                   {(
                     [
-                      ["flat-minimal", "Flat minimalista"],
-                      ["geometric", "Geométrico"],
-                      ["editorial", "Editorial"],
-                      ["tech-ui", "Tech / UI"],
-                      ["organic", "Orgânico"],
+                      ["solid", "Solid"],
+                      ["gradient", "Gradient"],
+                      ["transparent", "Transparent"],
                     ] as const
                   ).map(([id, label]) => (
                     <button
                       key={id}
                       type="button"
                       className="chip"
-                      data-active={config.visualStyle === id}
-                      onClick={() => patchConfig({ visualStyle: id })}
+                      data-active={config.background === id}
+                      onClick={() => patchConfig({ background: id })}
                     >
                       {label}
                     </button>
@@ -387,9 +319,7 @@ export default function NewVideoPage() {
           {tab === "motion" && (
             <div className="space-y-6">
               <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">
-                  Personalidade do easing — {config.easing}
-                </span>
+                <span className="text-[var(--muted)]">Easing personality — {config.easing}</span>
                 <input
                   type="range"
                   min={0}
@@ -405,12 +335,12 @@ export default function NewVideoPage() {
                   className="w-full accent-[var(--accent)]"
                 />
                 <div className="flex justify-between text-xs text-[var(--muted)]">
-                  <span>mecânico</span>
-                  <span>elástico</span>
+                  <span>mechanical</span>
+                  <span>elastic</span>
                 </div>
               </label>
               <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Intensidade — {config.intensity}</span>
+                <span className="text-[var(--muted)]">Intensity — {config.intensity}</span>
                 <input
                   type="range"
                   min={0}
@@ -428,13 +358,13 @@ export default function NewVideoPage() {
                   className="w-full accent-[var(--accent)]"
                 />
                 <div className="flex justify-between text-xs text-[var(--muted)]">
-                  <span>sutil</span>
-                  <span>intensa</span>
+                  <span>subtle</span>
+                  <span>intense</span>
                 </div>
               </label>
               <label className="block space-y-2 text-sm">
                 <span className="text-[var(--muted)]">
-                  Stagger entre elementos — {config.staggerMs} ms
+                  Stagger between elements — {config.staggerMs} ms
                 </span>
                 <input
                   type="range"
@@ -451,15 +381,15 @@ export default function NewVideoPage() {
 
           {tab === "delivery" && (
             <div className="space-y-4">
-              <p className="text-sm text-[var(--muted)]">Entregar também</p>
+              <p className="text-sm text-[var(--muted)]">Also deliver</p>
               <div className="flex flex-wrap gap-2">
                 {(
                   [
                     ["contactSheet", "Contact sheet"],
-                    ["previewGif", "GIF de prévia"],
-                    ["commentedSource", "Código-fonte comentado"],
-                    ["version169", "Versão 16:9"],
-                    ["version11", "Versão 1:1"],
+                    ["previewGif", "Preview GIF"],
+                    ["commentedSource", "Commented source"],
+                    ["version169", "16:9 version"],
+                    ["version11", "1:1 version"],
                   ] as const
                 ).map(([key, label]) => (
                   <button
@@ -483,14 +413,6 @@ export default function NewVideoPage() {
                   </button>
                 ))}
               </div>
-              <label className="block space-y-2 text-sm">
-                <span className="text-[var(--muted)]">Observações extras</span>
-                <Textarea
-                  value={config.extraNotes}
-                  onChange={(e) => patchConfig({ extraNotes: e.target.value })}
-                  placeholder="Qualquer regra específica"
-                />
-              </label>
             </div>
           )}
         </div>
@@ -499,10 +421,10 @@ export default function NewVideoPage() {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="font-[family-name:var(--font-display)] text-2xl font-bold">
-                2. Adicione da galeria
+                2. Motion gallery
               </h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
-                Choose the motion blocks Cursor should use when generating.
+                Hover a card to preview the effect. Selected blocks go into the Cursor prompt.
               </p>
             </div>
             <div className="relative w-full max-w-xs">
@@ -511,7 +433,7 @@ export default function NewVideoPage() {
                 className="pl-9"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Buscar animação…"
+                placeholder="Search motion…"
               />
             </div>
           </div>
@@ -528,12 +450,17 @@ export default function NewVideoPage() {
                   {items.map((item) => {
                     const selected = motionIds.includes(item.id);
                     return (
-                      <div key={item.id} className="panel overflow-hidden">
-                        <div
-                          className="h-28 bg-[linear-gradient(135deg,rgba(255,117,81,0.25),rgba(139,124,246,0.2))]"
-                          style={{
-                            backgroundImage: `radial-gradient(circle at 30% 40%, ${config.palette.accent}55, transparent 50%), radial-gradient(circle at 70% 60%, ${config.palette.support}44, transparent 45%), linear-gradient(160deg, ${config.palette.background}, #2a2740)`,
-                          }}
+                      <div
+                        key={item.id}
+                        className="panel overflow-hidden"
+                        onMouseEnter={() => setHoverMotion(item.id)}
+                        onMouseLeave={() => setHoverMotion((id) => (id === item.id ? null : id))}
+                      >
+                        <MotionPreview
+                          demo={item.demo}
+                          accent={accent}
+                          support={support}
+                          active={hoverMotion === item.id || selected}
                         />
                         <div className="space-y-3 p-4">
                           <div>
@@ -547,11 +474,11 @@ export default function NewVideoPage() {
                           >
                             {selected ? (
                               <>
-                                <Check className="h-3.5 w-3.5" /> Adicionado
+                                <Check className="h-3.5 w-3.5" /> Added
                               </>
                             ) : (
                               <>
-                                <Plus className="h-3.5 w-3.5" /> Adicionar
+                                <Plus className="h-3.5 w-3.5" /> Add
                               </>
                             )}
                           </Button>
@@ -570,17 +497,17 @@ export default function NewVideoPage() {
         <div>
           <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">Prompt</h2>
           <p className="mt-1 text-xs text-[var(--muted)]">
-            {prompt.length.toLocaleString()} caracteres · ~{Math.round(prompt.length / 4)} tokens
+            {prompt.length.toLocaleString()} characters · ~{Math.round(prompt.length / 4)} tokens
           </p>
         </div>
 
         <div>
           <div className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--muted)]">
-            Itens adicionados
+            Selected motions
           </div>
           <ul className="max-h-40 space-y-2 overflow-auto pr-1">
             {motionIds.length === 0 ? (
-              <li className="text-sm text-[var(--muted)]">Nenhum item ainda.</li>
+              <li className="text-sm text-[var(--muted)]">None yet.</li>
             ) : (
               motionIds.map((id, index) => {
                 const item = MOTION_GALLERY.find((m) => m.id === id);
@@ -613,7 +540,7 @@ export default function NewVideoPage() {
 
         <div>
           <div className="mb-2 text-xs uppercase tracking-[0.14em] text-[var(--muted)]">
-            Pré-visualização
+            Preview
           </div>
           <div className="panel-inset max-h-72 overflow-auto p-3 prompt-preview">{prompt}</div>
         </div>
@@ -622,14 +549,8 @@ export default function NewVideoPage() {
           <Sparkles className="h-4 w-4" />
           {busy ? "Starting…" : "Generate video"}
         </Button>
-        <Button
-          className="w-full"
-          variant="secondary"
-          onClick={() => {
-            setMotionIds([]);
-          }}
-        >
-          Limpar itens
+        <Button className="w-full" variant="secondary" onClick={() => setMotionIds([])}>
+          Clear motions
         </Button>
       </aside>
     </div>

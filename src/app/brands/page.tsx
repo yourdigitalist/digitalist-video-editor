@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, Plus, Trash2 } from "lucide-react";
+import { ExternalLink, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { MAX_BRAND_COLORS, normalizePalette } from "@/lib/palette";
 import { useEditorStore } from "@/lib/store";
 import { formatRelative } from "@/lib/utils";
+import type { BrandColor } from "@/lib/types";
 
 export default function BrandsPage() {
   const hydrated = useEditorStore((s) => s.hydrated);
@@ -17,28 +19,74 @@ export default function BrandsPage() {
   const [name, setName] = useState("");
   const [driveUrl, setDriveUrl] = useState("");
   const [notes, setNotes] = useState("");
-  const [designSystemNote, setDesignSystemNote] = useState("");
   const [open, setOpen] = useState(false);
+  const [importingId, setImportingId] = useState<string | null>(null);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
 
   if (!hydrated) {
     return <div className="panel p-10 text-[var(--muted)]">Loading brands…</div>;
   }
 
+  async function importDesignSystem(brandId: string, url: string, brandName: string) {
+    setImportingId(brandId);
+    setImportMessage(null);
+    try {
+      const res = await fetch("/api/drive/import-design-system", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ driveUrl: url, brandName }),
+      });
+      const data = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        palette?: BrandColor[];
+        typography?: string;
+        source?: string;
+      };
+      if (!data.ok || !data.palette) {
+        setImportMessage(data.error || "Could not import design system");
+        return;
+      }
+      updateBrand(brandId, {
+        palette: normalizePalette(data.palette).slice(0, MAX_BRAND_COLORS),
+        typography: data.typography,
+        notes: notesFromImport(brandId, data.source),
+      });
+      setImportMessage(
+        data.source === "google-drive"
+          ? "Pulled colors & typography from Drive tokens.json"
+          : "Loaded sample design-system tokens (bind GOOGLE_DRIVE_API_KEY for live Drive reads)",
+      );
+    } catch {
+      setImportMessage("Import failed");
+    } finally {
+      setImportingId(null);
+    }
+  }
+
+  function notesFromImport(brandId: string, source?: string) {
+    const brand = brands.find((b) => b.id === brandId);
+    const stamp = `Design system imported (${source ?? "unknown"}) at ${new Date().toLocaleString()}`;
+    if (!brand?.notes) return stamp;
+    if (brand.notes.includes("Design system imported")) return brand.notes;
+    return `${brand.notes}\n${stamp}`;
+  }
+
   function onCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    addBrand({
+    const brand = addBrand({
       name: name.trim(),
       driveUrl: driveUrl.trim(),
-      notes: [notes.trim(), designSystemNote.trim() && `Design system: ${designSystemNote.trim()}`]
-        .filter(Boolean)
-        .join("\n"),
+      notes: notes.trim(),
     });
     setName("");
     setDriveUrl("");
     setNotes("");
-    setDesignSystemNote("");
     setOpen(false);
+    if (driveUrl.trim() || name.trim()) {
+      void importDesignSystem(brand.id, driveUrl.trim(), name.trim());
+    }
   }
 
   return (
@@ -47,8 +95,8 @@ export default function BrandsPage() {
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-bold">Brands</h1>
           <p className="mt-2 max-w-2xl text-[var(--muted)]">
-            Keep logos, photos and design-system files in a Google Drive folder and paste the link
-            here. No database needed for brand assets — Cursor reads the Drive folder when generating.
+            Point each brand at a Google Drive folder with tokens.json (and logos/assets). Colors and
+            typography pull from that design system first — edit manually only when needed.
           </p>
         </div>
         <Button onClick={() => setOpen((v) => !v)}>
@@ -56,6 +104,10 @@ export default function BrandsPage() {
           Add brand
         </Button>
       </div>
+
+      {importMessage ? (
+        <div className="panel-inset px-4 py-3 text-sm text-[var(--muted)]">{importMessage}</div>
+      ) : null}
 
       {open && (
         <form onSubmit={onCreate} className="panel space-y-4 p-6">
@@ -65,10 +117,15 @@ export default function BrandsPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 text-sm">
               <span className="text-[var(--muted)]">Name</span>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Fungal Dreams" required />
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Fungal Dreams"
+                required
+              />
             </label>
             <label className="space-y-2 text-sm">
-              <span className="text-[var(--muted)]">Google Drive (logos & photos)</span>
+              <span className="text-[var(--muted)]">Google Drive folder</span>
               <Input
                 value={driveUrl}
                 onChange={(e) => setDriveUrl(e.target.value)}
@@ -76,18 +133,10 @@ export default function BrandsPage() {
               />
             </label>
           </div>
-          <label className="block space-y-2 text-sm">
-            <span className="text-[var(--muted)]">Design system folder (Drive or local note)</span>
-            <Input
-              value={designSystemNote}
-              onChange={(e) => setDesignSystemNote(e.target.value)}
-              placeholder="Put tokens.json, Guidelines.md, Logos.md… in the Drive folder above"
-            />
-            <p className="text-xs text-[var(--muted)]">
-              Recommended: one Drive folder per brand with tokens, guidelines, logos and product cutouts.
-              Paste that folder URL in Google Drive — no Supabase/upload required for v1.
-            </p>
-          </label>
+          <p className="text-xs text-[var(--muted)]">
+            Recommended layout: tokens.json, Guidelines.md, Logos.md, product cutouts. Saving will try
+            to import colors/typography automatically.
+          </p>
           <label className="block space-y-2 text-sm">
             <span className="text-[var(--muted)]">Notes</span>
             <Textarea
@@ -107,9 +156,9 @@ export default function BrandsPage() {
 
       <div className="grid gap-4 md:grid-cols-2">
         {brands.map((brand) => (
-          <article key={brand.id} className="panel space-y-4 p-6">
+          <article key={brand.id} className="panel space-y-4 overflow-hidden p-6">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
                   {brand.name}
                 </h2>
@@ -127,12 +176,12 @@ export default function BrandsPage() {
               </Button>
             </div>
 
-            <div className="flex gap-2">
-              {Object.entries(brand.palette).map(([role, hex]) => (
-                <div key={role} className="panel-inset flex items-center gap-2 px-3 py-2 text-xs">
-                  <span className="swatch" style={{ background: hex }} />
-                  <span className="text-[var(--muted)]">{role}</span>
-                  <span className="mono">{hex}</span>
+            <div className="swatch-row">
+              {brand.palette.slice(0, MAX_BRAND_COLORS).map((color) => (
+                <div key={color.id} className="swatch-chip">
+                  <span className="swatch shrink-0" style={{ background: color.hex }} />
+                  <span className="truncate text-[var(--muted)]">{color.role}</span>
+                  <span className="mono truncate">{color.hex}</span>
                 </div>
               ))}
             </div>
@@ -155,6 +204,21 @@ export default function BrandsPage() {
               </div>
             </label>
 
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={importingId === brand.id}
+                onClick={() =>
+                  void importDesignSystem(brand.id, brand.driveUrl ?? "", brand.name)
+                }
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${importingId === brand.id ? "animate-spin" : ""}`} />
+                Pull from design system
+              </Button>
+            </div>
+
             <label className="block space-y-2 text-sm">
               <span className="text-[var(--muted)]">Typography</span>
               <Input
@@ -164,7 +228,7 @@ export default function BrandsPage() {
             </label>
 
             <label className="block space-y-2 text-sm">
-              <span className="text-[var(--muted)]">Notes / design system</span>
+              <span className="text-[var(--muted)]">Notes</span>
               <Textarea
                 value={brand.notes ?? ""}
                 onChange={(e) => updateBrand(brand.id, { notes: e.target.value })}

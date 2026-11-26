@@ -7,17 +7,21 @@ export type VisualStyle =
   | "geometric"
   | "editorial"
   | "tech-ui"
-  | "organic";
+  | "organic"
+  | "bold-pop"
+  | "luxury"
+  | "playful"
+  | "documentary";
 export type EasingPersonality = "mechanical" | "expressive" | "elastic";
 export type Intensity = "subtle" | "moderate" | "intense";
-export type BaseMaterial = "script" | "audio" | "video" | "briefing";
 export type VideoStatus = "draft" | "ready" | "generating" | "rendered" | "failed";
 
-export interface BrandPalette {
-  background: string;
-  text: string;
-  accent: string;
-  support: string;
+/** Ordered brand colors from the design system (max 8). */
+export interface BrandColor {
+  id: string;
+  /** Semantic role when known: background, text, accent, support, or free label. */
+  role: string;
+  hex: string;
 }
 
 export interface Brand {
@@ -26,12 +30,40 @@ export interface Brand {
   slug: string;
   driveUrl?: string;
   designSystemPath?: string;
-  palette: BrandPalette;
+  palette: BrandColor[];
   typography: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type MotionDemoKind =
+  | "orbit"
+  | "pop"
+  | "stroke"
+  | "morph"
+  | "cursor"
+  | "stack"
+  | "cards"
+  | "browser"
+  | "logo"
+  | "sticker"
+  | "lower-third"
+  | "cta"
+  | "kinetic"
+  | "mask"
+  | "typewriter"
+  | "cascade"
+  | "highlighter"
+  | "counter"
+  | "bars"
+  | "timeline"
+  | "ranking"
+  | "blob"
+  | "particles"
+  | "gradient"
+  | "camera"
+  | "blur";
 
 export interface MotionItem {
   id: string;
@@ -39,10 +71,10 @@ export interface MotionItem {
   category: string;
   description: string;
   promptBlock: string;
+  demo: MotionDemoKind;
 }
 
 export interface VideoConfig {
-  base: BaseMaterial;
   stack: "html-svg-gsap";
   aspectRatio: AspectRatio;
   durationSec: number;
@@ -50,7 +82,7 @@ export interface VideoConfig {
   quality: Quality;
   background: BackgroundMode;
   visualStyle: VisualStyle;
-  palette: BrandPalette;
+  palette: BrandColor[];
   typography: string;
   easing: EasingPersonality;
   intensity: Intensity;
@@ -62,10 +94,9 @@ export interface VideoConfig {
     version169: boolean;
     version11: boolean;
   };
-  goal: string;
-  mandatoryTexts: string;
+  /** Full creative brief (format, duration, copy, etc. live here). */
+  briefing: string;
   extraNotes: string;
-  scriptText: string;
   driveAssetsUrl: string;
 }
 
@@ -96,6 +127,7 @@ export interface VideoProject {
   chat: ChatMessage[];
   thumbnail?: string;
   outputPath?: string;
+  drivePackageUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -104,3 +136,15 @@ export interface AppState {
   brands: Brand[];
   videos: VideoProject[];
 }
+
+export const VISUAL_STYLES: { id: VisualStyle; label: string; hint: string }[] = [
+  { id: "flat-minimal", label: "Flat minimal", hint: "Clean shapes, little decoration" },
+  { id: "geometric", label: "Geometric", hint: "Hard edges, grids, construction" },
+  { id: "editorial", label: "Editorial", hint: "Magazine type, crop drama" },
+  { id: "tech-ui", label: "Tech / UI", hint: "Product screens, interface motion" },
+  { id: "organic", label: "Organic", hint: "Soft blobs, botanical curves" },
+  { id: "bold-pop", label: "Bold pop", hint: "High contrast, loud accents" },
+  { id: "luxury", label: "Luxury", hint: "Slow reveals, sparse composition" },
+  { id: "playful", label: "Playful", hint: "Bounce, stickers, friendly pace" },
+  { id: "documentary", label: "Documentary", hint: "Straightforward, evidence-led" },
+];

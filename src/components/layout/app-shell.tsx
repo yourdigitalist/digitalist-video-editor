@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, FolderKanban, LayoutDashboard, Plus } from "lucide-react";
+import { Clapperboard, FolderKanban, LayoutDashboard, Plus, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -10,6 +10,7 @@ const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/brands", label: "Brands", icon: FolderKanban },
   { href: "/videos", label: "Videos", icon: Clapperboard },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

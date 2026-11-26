@@ -2,7 +2,7 @@
 
 import type { VideoConfig } from "@/lib/types";
 
-const TABS = ["base", "stack", "format", "visual", "motion", "delivery"] as const;
+const TABS = ["base", "visual", "motion", "delivery"] as const;
 export type ConfigTab = (typeof TABS)[number];
 
 export function ConfigSummary({
@@ -17,21 +17,10 @@ export function ConfigSummary({
   const items: { id: ConfigTab; label: string; value: React.ReactNode }[] = [
     {
       id: "base",
-      label: "Base",
-      value:
-        config.base === "script"
-          ? "Roteiro anexado"
-          : config.base === "audio"
-            ? "Áudio anexado"
-            : config.base === "video"
-              ? "Vídeo anexado"
-              : "Só briefing",
-    },
-    { id: "stack", label: "Stack", value: "HTML/SVG + GSAP" },
-    {
-      id: "format",
-      label: "Formato",
-      value: `${config.aspectRatio} · ${config.durationSec} s · ${config.fps} fps`,
+      label: "Brief",
+      value: config.briefing.trim()
+        ? `${config.briefing.trim().slice(0, 42)}${config.briefing.trim().length > 42 ? "…" : ""}`
+        : "Add briefing + Drive folder",
     },
     {
       id: "visual",
@@ -39,24 +28,24 @@ export function ConfigSummary({
       value: (
         <span className="inline-flex items-center gap-2">
           <span className="inline-flex gap-1">
-            {Object.values(config.palette).map((hex) => (
-              <span key={hex} className="swatch" style={{ background: hex }} />
+            {config.palette.slice(0, 4).map((c) => (
+              <span key={c.id} className="swatch shrink-0" style={{ background: c.hex }} />
             ))}
           </span>
-          4 cores · {config.visualStyle.replace("-", " ")}
+          {config.palette.length} colors · {config.visualStyle.replace(/-/g, " ")}
         </span>
       ),
     },
     {
       id: "motion",
-      label: "Movimento",
+      label: "Motion",
       value: `${config.easing} · ${config.intensity}`,
     },
-    { id: "delivery", label: "Entrega", value: "MP4" },
+    { id: "delivery", label: "Delivery", value: "MP4 package" },
   ];
 
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       {items.map((item) => (
         <button
           key={item.id}

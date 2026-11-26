@@ -1,29 +1,32 @@
 import { getMotionById } from "@/data/motion-gallery";
+import { colorByRole } from "@/lib/palette";
 import type { Brand, VideoConfig } from "@/lib/types";
 
 const EASING_COPY: Record<VideoConfig["easing"], string> = {
   mechanical:
-    "mecânico, easeOutQuad nas entradas e easeInQuad nas saídas; movimentos precisos e curtos",
+    "mechanical — easeOutQuad on entrances and easeInQuad on exits; short, precise moves",
   expressive:
-    "expressivo, easeOutExpo nas entradas e easeInExpo nas saídas; movimentos rápidos que assentam com suavidade",
+    "expressive — easeOutExpo on entrances and easeInExpo on exits; fast settles",
   elastic:
-    "elástico, easeOutBack nas entradas e easeInBack nas saídas; overshoot controlado",
+    "elastic — easeOutBack on entrances and easeInBack on exits; controlled overshoot",
 };
 
 const INTENSITY_COPY: Record<VideoConfig["intensity"], string> = {
-  subtle: "sutil, deslocamentos de 16 a 32 px, escalas de 92% a 104%, entradas de 200 a 400 ms",
-  moderate:
-    "moderada, deslocamentos de 40 a 80 px, escalas de 80% a 110%, entradas de 300 a 600 ms",
-  intense:
-    "intensa, deslocamentos de 80 a 140 px, escalas de 70% a 120%, entradas de 450 a 800 ms",
+  subtle: "subtle — 16–32px travel, 92–104% scale, 200–400ms entrances",
+  moderate: "moderate — 40–80px travel, 80–110% scale, 300–600ms entrances",
+  intense: "intense — 80–140px travel, 70–120% scale, 450–800ms entrances",
 };
 
 const STYLE_COPY: Record<VideoConfig["visualStyle"], string> = {
-  "flat-minimal": "flat minimalista",
-  geometric: "geométrico",
+  "flat-minimal": "flat minimal",
+  geometric: "geometric",
   editorial: "editorial",
   "tech-ui": "tech / UI",
-  organic: "orgânico",
+  organic: "organic",
+  "bold-pop": "bold pop",
+  luxury: "luxury",
+  playful: "playful",
+  documentary: "documentary",
 };
 
 const ASPECT_SIZE: Record<VideoConfig["aspectRatio"], string> = {
@@ -34,20 +37,13 @@ const ASPECT_SIZE: Record<VideoConfig["aspectRatio"], string> = {
   "21:9": "2560×1080 (21:9)",
 };
 
-const BASE_COPY: Record<VideoConfig["base"], string> = {
-  script: "roteiro anexado. Ele define o que aparece, em que ordem e com que ênfase.",
-  audio: "áudio anexado. Use o ritmo e a fala para timing e ênfase.",
-  video: "vídeo anexado. Use como referência de tempo e/ou camada de fundo conforme o uso indicado.",
-  briefing: "apenas o briefing. Extraia cenas do objetivo e dos textos obrigatórios.",
-};
-
 export function buildMotionPrompt(opts: {
   brand: Brand;
   config: VideoConfig;
   motionIds: string[];
-  deliverablesExtra?: string[];
+  revisions?: string[];
 }): string {
-  const { brand, config, motionIds } = opts;
+  const { brand, config, motionIds, revisions } = opts;
   const frames = Math.round(config.durationSec * config.fps);
   const motions = motionIds
     .map((id) => getMotionById(id))
@@ -57,99 +53,95 @@ export function buildMotionPrompt(opts: {
 
   const extras: string[] = [];
   if (config.deliverables.contactSheet) extras.push("Contact sheet");
-  if (config.deliverables.previewGif) extras.push("GIF de prévia");
-  if (config.deliverables.commentedSource) extras.push("Código-fonte comentado");
-  if (config.deliverables.version169) extras.push("Versão 16:9");
-  if (config.deliverables.version11) extras.push("Versão 1:1");
+  if (config.deliverables.previewGif) extras.push("Preview GIF");
+  if (config.deliverables.commentedSource) extras.push("Commented source");
+  if (config.deliverables.version169) extras.push("16:9 version");
+  if (config.deliverables.version11) extras.push("1:1 version");
 
   const driveLine = config.driveAssetsUrl.trim()
     ? `\n- Assets (Google Drive): ${config.driveAssetsUrl.trim()}`
     : brand.driveUrl
-      ? `\n- Assets (Google Drive da marca): ${brand.driveUrl}`
+      ? `\n- Assets (brand Google Drive): ${brand.driveUrl}`
       : "";
 
-  const scriptBlock = config.scriptText.trim()
-    ? `\n\n<roteiro>\n${config.scriptText.trim()}\n</roteiro>`
-    : "";
+  const paletteLine = config.palette
+    .map((c) => `${c.role} ${c.hex}`)
+    .join(", ");
 
-  return `# Prompt de motion graphics programático
+  const revisionBlock =
+    revisions && revisions.length
+      ? `\n\n<revisions>\n${revisions.map((r, i) => `${i + 1}. ${r}`).join("\n")}\n</revisions>`
+      : "";
 
-<papel>
-Você é um motion designer que trabalha com código. Crie um motion graphic de forma programática usando HTML/SVG/CSS com uma timeline GSAP pausada, guiado pelo material base. Renderize cada quadro de forma determinística, capture os quadros e monte um MP4. Trabalhe em etapas e verifique o resultado olhando os quadros.
-</papel>
+  return `# Programmatic motion graphics prompt
 
-<material_base>
-- Base: ${BASE_COPY[config.base]}
-- Marca: ${brand.name}
-- Tipografia da marca: ${config.typography || brand.typography}${driveLine}
-</material_base>
+<role>
+You are a motion designer who works in code. Build this piece programmatically with HTML/SVG/CSS and a paused GSAP timeline, guided by the brief and brand. Render each frame deterministically, capture frames, and assemble an MP4. Work in stages and verify by looking at frames.
+</role>
+
+<material>
+- Brand: ${brand.name}
+- Brand typography: ${config.typography || brand.typography}${driveLine}
+- Default render stack (unless the brief says otherwise): HTML/SVG + GSAP → Playwright frames → FFmpeg MP4
+</material>
 
 <briefing>
-Objetivo: ${config.goal.trim() || "[o que a peça precisa comunicar]"}
-Textos obrigatórios: ${config.mandatoryTexts.trim() || "(nenhum além do material base)"}
-Os demais textos em tela saem do material base, resumidos para leitura rápida e com acentuação correta.
-${config.extraNotes.trim() ? `Observações extras: ${config.extraNotes.trim()}` : ""}
+${config.briefing.trim() || "[Paste the creative brief — goal, copy, format, duration, and delivery notes.]"}
+${config.extraNotes.trim() ? `Extra notes: ${config.extraNotes.trim()}` : ""}
 </briefing>
-${scriptBlock}
+${revisionBlock}
 
-<especificacoes>
-- Resolução: ${ASPECT_SIZE[config.aspectRatio]}.
-- ${config.fps} fps, duração aproximada de ${config.durationSec} s (cerca de ${frames} quadros). Ajuste ao que o material precisa para ser lido com calma, avisando se ficar mais de 20% diferente.
-- Fundo: ${config.background === "solid" ? "cor sólida de fundo da paleta" : config.background === "gradient" ? "gradiente das cores da paleta" : "transparente (ProRes/WebM se necessário)"}.
-- Qualidade de encode: ${config.quality}.
-- Saída: motion.mp4 em H.264, yuv420p, CRF ${config.quality === "high" ? 15 : config.quality === "standard" ? 18 : 23}, preset slow, +faststart.
-- Margem de segurança: nenhum texto a menos de 6% das bordas; em 9:16, deixe também ~20% livres na base para a interface das redes.
-</especificacoes>
+<specs>
+- Prefer format / duration / fps from the briefing when stated. Fallback: ${ASPECT_SIZE[config.aspectRatio]}, ~${config.durationSec}s at ${config.fps} fps (~${frames} frames).
+- Background: ${config.background === "solid" ? "solid brand background" : config.background === "gradient" ? "palette gradient" : "transparent (ProRes/WebM if needed)"}.
+- Encode quality: ${config.quality}.
+- Output: motion.mp4 H.264, yuv420p, CRF ${config.quality === "high" ? 15 : config.quality === "standard" ? 18 : 23}, preset slow, +faststart.
+- Safe margins: no text within 6% of edges; for 9:16 leave ~20% clear at the bottom for platform UI.
+</specs>
 
-<direcao_visual>
-- Paleta (hex): fundo ${config.palette.background}, texto ${config.palette.text}, destaque ${config.palette.accent}, apoio ${config.palette.support}. Use só essas cores; o destaque aparece em um foco por vez.
-- Tipografia: ${config.typography || brand.typography}. Carregue as fontes localmente antes do primeiro quadro.
-- Estilo: ${STYLE_COPY[config.visualStyle]}.
-- Easing padrão: ${EASING_COPY[config.easing]}. Animações do repertório que especificam easing próprio têm prioridade.
-- Intensidade: ${INTENSITY_COPY[config.intensity]}. Momentos de ênfase do conteúdo podem subir um nível; trechos explicativos, descer.
-- Stagger padrão entre elementos de um grupo: ${config.staggerMs} ms.
-- Hierarquia: um foco por vez. Elementos que saem de cena saem antes de o próximo foco entrar.
-</direcao_visual>
+<visual_direction>
+- Palette (hex, use only these — up to 8): ${paletteLine || `${colorByRole(config.palette, "background")} / ${colorByRole(config.palette, "text")} / ${colorByRole(config.palette, "accent")} / ${colorByRole(config.palette, "support")}`}. Accent color for one focus at a time.
+- Typography: ${config.typography || brand.typography}. Load fonts locally before frame 0.
+- Style: ${STYLE_COPY[config.visualStyle]}.
+- Default easing: ${EASING_COPY[config.easing]}. Repertoire blocks with their own easing win.
+- Intensity: ${INTENSITY_COPY[config.intensity]}.
+- Default stagger inside a group: ${config.staggerMs} ms.
+- Hierarchy: one focus at a time. Exit previous focus before the next enters.
+</visual_direction>
 
-<repertorio_de_animacao>
-Animações selecionadas nesta peça. O material base decide onde, em que ordem e quantas vezes cada uma aparece; a mesma pode se repetir se o conteúdo pedir:
-${motions || "- (nenhuma selecionada — escolha do repertório completo o que melhor servir a cada bloco)"}
-</repertorio_de_animacao>
+<animation_repertoire>
+Selected motions for this piece. The brief decides where, in what order, and how often each appears:
+${motions || "- (none selected — pick from the full repertoire what serves each beat)"}
+</animation_repertoire>
 
-<como_aplicar>
-1. Leia o material inteiro e divida-o em blocos de ideia (uma ideia por cena).
-2. Estime a duração de cada bloco pelo tempo de leitura (cerca de 2,5 palavras por segundo, mais 0,5 s de respiro), somando a duração total.
-3. Para cada bloco, escolha do repertório a animação que melhor traduz aquele conteúdo. Varie entre blocos seguidos.
-4. Monte o storyboard em storyboard.md: bloco, tempo de início e fim (em segundos e quadros), texto em tela, animação escolhida e o motivo. Mostre o storyboard antes de animar.
-5. Só então implemente. Se uma animação escolhida não servir na prática, troque por outra do repertório e registre a troca.
-</como_aplicar>
+<how_to_apply>
+1. Read the brief and split into idea blocks (one idea per scene).
+2. Estimate each block by reading time (~2.5 words/sec + 0.5s breath), summing to total duration.
+3. For each block, pick the repertoire motion that best carries the idea. Vary consecutive blocks.
+4. Write storyboard.md: block, start/end (sec + frames), on-screen text, motion, why. Show the storyboard before animating.
+5. Only then implement. If a motion fails in practice, swap and record the change.
+</how_to_apply>
 
-<pipeline_de_render>
-1. Crie index.html com o palco em exatamente a resolução pedida e toda a animação em uma única gsap.timeline({ paused: true }), com os tempos vindos do storyboard. Nada pode animar fora dessa timeline.
-2. Exponha no window: ready (Promise que resolve depois de document.fonts.ready e do carregamento das imagens) e seek(t), que chama tl.seek(t, false).
-3. Crie render.mjs com Playwright (Chromium headless): viewport na resolução, deviceScaleFactor 1; aguarde ready; para cada quadro i de 0 até N − 1, chame seek(i / fps) e salve frames/%05d.png com page.screenshot().
-4. Monte o vídeo: ffmpeg -y -framerate ${config.fps} -i frames/%05d.png -c:v libx264 -pix_fmt yuv420p -crf ${config.quality === "high" ? 15 : config.quality === "standard" ? 18 : 23} -preset slow -movflags +faststart motion.mp4
-</pipeline_de_render>
+<render_pipeline>
+1. Create index.html with the stage at the exact resolution and one gsap.timeline({ paused: true }) driven by the storyboard. Nothing animates outside that timeline.
+2. Expose on window: ready (Promise after document.fonts.ready + images) and seek(t) → tl.seek(t, false).
+3. Create render.mjs with Playwright Chromium: matching viewport, deviceScaleFactor 1; await ready; for frame i in 0…N−1 call seek(i / fps) and save frames/%05d.png.
+4. Encode: ffmpeg -y -framerate ${config.fps} -i frames/%05d.png -c:v libx264 -pix_fmt yuv420p -crf ${config.quality === "high" ? 15 : config.quality === "standard" ? 18 : 23} -preset slow -movflags +faststart motion.mp4
+</render_pipeline>
 
-<regras_de_determinismo>
-- O quadro é função pura do tempo: render(i) gera sempre a mesma imagem. Proibido usar requestAnimationFrame, setTimeout, Date.now() ou mídia tocando em tempo real durante a captura.
-- Aleatoriedade só com gerador com semente fixa (ex.: mulberry32(42)), avançado pelo número do quadro.
-- Assets locais e carregados antes do quadro 0. Dados de áudio (tempos, batidas, volume) pré-calculados em JSON antes da captura.
-- Não pule nem duplique quadros: confira a contagem de PNGs antes de codificar.
-</regras_de_determinismo>
+<determinism>
+- Frame is a pure function of time. No requestAnimationFrame, setTimeout, Date.now(), or realtime media during capture.
+- Randomness only via a seeded PRNG advanced by frame index.
+- Local assets loaded before frame 0.
+- Confirm PNG count before encode.
+</determinism>
 
-<verificacao>
-1. Antes do render completo, gere quadros em 0%, 20%, 40%, 60%, 80% e 100% da duração e uma contact sheet. Confira texto cortado, sobreposição, contraste, margens e acentuação, e me mostre antes de seguir.
-2. Depois de montar o vídeo, rode ffprobe e confirme resolução, fps e a duração esperada.
-3. Se algo falhar, corrija o código e renderize de novo. Não entregue com problemas conhecidos sem avisar.
-</verificacao>
-
-<entrega>
+<delivery>
 - motion.mp4
-- storyboard.md com as decisões de cada bloco.
-- Código-fonte e um README curto com o comando para renderizar de novo.
-${extras.length ? `- Também: ${extras.join(", ")}.` : ""}
-- Apague a pasta frames/ depois de validar o vídeo, a menos que eu peça para manter.
-</entrega>
+- storyboard.md
+- Source + short README with the re-render command
+${extras.length ? `- Also: ${extras.join(", ")}.` : ""}
+- Delete frames/ after validation unless asked to keep it.
+</delivery>
 `;
 }
